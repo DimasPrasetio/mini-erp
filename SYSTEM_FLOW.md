@@ -2,12 +2,12 @@
 
 ## 1. Tujuan Dokumen
 
-Dokumen ini mendeskripsikan alur inti sistem mini ERP SaaS pada dua mode utama:
+Dokumen ini menjelaskan alur inti sistem untuk model:
 
-1. `Deep Mode` melalui web untuk operasional penuh.
-2. `Quick Mode` melalui WhatsApp Owner Assistant untuk insight cepat owner.
-
-Dokumen ini sengaja menekankan perubahan minimum agar tetap selaras dengan PRD, SYSTEM_DESIGN, dan DB_SCHEMA tanpa menambah kompleksitas yang tidak perlu.
+1. satu perusahaan,
+2. banyak cabang,
+3. web sebagai primary system,
+4. WhatsApp sebagai secondary interface owner.
 
 ---
 
@@ -15,21 +15,21 @@ Dokumen ini sengaja menekankan perubahan minimum agar tetap selaras dengan PRD, 
 
 | # | Flow | Mode | Actor |
 |---|------|------|-------|
-| 1 | Login & Tenant Selection | Web | Semua |
-| 2 | Manajemen Produk | Web | Admin/Staff |
-| 3 | Pembuatan Order | Web | Admin/Staff |
-| 4 | Perubahan Status Order | Web | Admin/Staff |
-| 5 | Penyesuaian Stok | Web | Admin |
-| 6 | Owner WhatsApp Query | WhatsApp | Owner |
-| 7 | Knowledge Query | WhatsApp | Owner |
-| 8 | Order -> Stock Integration | System | System |
-| 9 | Switch Role | Web | Semua (multi-role) |
+| 1 | Login & Branch Selection | Web | Semua |
+| 2 | Product Management | Web | Admin/Staff |
+| 3 | Order Create | Web | Admin/Staff |
+| 4 | Order Status Change | Web | Admin/Staff |
+| 5 | Stock Adjustment | Web | Admin |
+| 6 | Branch Switch | Web | Semua |
+| 7 | Owner WhatsApp Query | WhatsApp | Owner |
+| 8 | Knowledge Query | WhatsApp | Owner |
+| 9 | Order -> Stock Integration | System | System |
 
 ---
 
 ## 3. Flow Detail
 
-### 3.1 Login & Tenant Selection
+### 3.1 Login & Branch Selection
 
 ```mermaid
 sequenceDiagram
@@ -38,25 +38,24 @@ sequenceDiagram
     participant API as NestJS API
     participant DB as MySQL
 
-    U->>W: Submit email + password
+    U->>W: Submit email/username + password
     W->>API: POST /auth/login
-    API->>DB: Validate user + memberships
-    DB-->>API: User + tenant memberships + roles
+    API->>DB: Validate user + membership + branch access
+    DB-->>API: User + roles + branches
     API-->>W: Access token + current user
-    alt Satu tenant
+    alt Satu cabang
+        W->>W: Set active branch otomatis
         W->>W: Redirect ke dashboard
-    else Multi-tenant
-        W->>W: Redirect ke select-tenant
-        U->>W: Pilih tenant
-        W->>API: Persist active tenant context
+    else Banyak cabang
+        W->>W: Redirect ke select-branch
+        U->>W: Pilih cabang
+        W->>API: POST /auth/switch-branch
         API-->>W: OK
         W->>W: Redirect ke dashboard
     end
 ```
 
----
-
-### 3.2 Manajemen Produk (Create)
+### 3.2 Manajemen Produk
 
 ```mermaid
 sequenceDiagram
@@ -68,15 +67,12 @@ sequenceDiagram
 
     U->>W: Isi form produk
     W->>API: POST /items
-    API->>S: Validate payload + tenant context
-    S->>DB: Insert item
+    API->>S: Validate payload + permission
+    S->>DB: Insert item company-scoped
     DB-->>S: Item created
     S-->>API: DTO item
     API-->>W: 201 Created
-    W-->>U: Tampilkan produk baru
 ```
-
----
 
 ### 3.3 Pembuatan Order
 
@@ -90,17 +86,14 @@ sequenceDiagram
 
     U->>W: Submit order
     W->>API: POST /orders
-    API->>O: Validate tenant, item, party, status awal
-    O->>DB: Insert order
+    API->>O: Validate branch context, item, party, status awal
+    O->>DB: Insert order with active_branch_id
     O->>DB: Insert order_items
     O->>DB: Insert order_status_history
     DB-->>O: Order saved
     O-->>API: DTO order
     API-->>W: 201 Created
-    W-->>U: Tampilkan detail order
 ```
-
----
 
 ### 3.4 Perubahan Status Order
 
@@ -113,17 +106,14 @@ sequenceDiagram
     participant DB as MySQL
 
     U->>W: Ubah status order
-    W->>API: PATCH /orders/:id/status
-    API->>O: Validate transition
-    O->>DB: Update orders.current_status_id
+    W->>API: POST /orders/:id/status
+    API->>O: Validate branch access + transition
+    O->>DB: Update order status
     O->>DB: Insert order_status_history
     DB-->>O: Updated
     O-->>API: DTO order
     API-->>W: 200 OK
-    W-->>U: Status baru tampil
 ```
-
----
 
 ### 3.5 Penyesuaian Stok
 
@@ -137,64 +127,64 @@ sequenceDiagram
 
     U->>W: Submit stock adjustment
     W->>API: POST /stock/adjustments
-    API->>S: Validate item + default location
-    S->>DB: Insert inventory_movement
+    API->>S: Validate item + active branch + default location
+    S->>DB: Insert inventory_movements
     S->>DB: Update inventory_balances
     DB-->>S: Updated
     S-->>API: Adjustment result
     API-->>W: 201 Created
-    W-->>U: Saldo stok terbaru
 ```
 
----
+### 3.6 Branch Switch
 
-### 3.6 Owner WhatsApp Query (Quick Mode)
+```mermaid
+sequenceDiagram
+    participant U as User
+    participant W as React Web
+    participant API as NestJS API
+    participant DB as MySQL
+
+    U->>W: Pilih cabang lain
+    W->>API: POST /auth/switch-branch
+    API->>DB: Validate branch access
+    DB-->>API: Branch valid
+    API-->>W: Updated active branch
+    W->>W: Refresh data halaman
+```
+
+### 3.7 Owner WhatsApp Query
 
 ```mermaid
 sequenceDiagram
     participant O as Owner
     participant WA as Baileys Gateway
     participant API as NestJS API
-    participant Auth as Auth Resolver
+    participant Auth as Authorization Resolver
     participant A as Assistant Module
     participant T as Internal Tools
     participant LLM as OpenAI API
     participant DB as MySQL
 
-    O->>WA: "Penjualan hari ini berapa?"
+    O->>WA: Penjualan hari ini berapa?
     WA->>API: Forward inbound message
-    API->>DB: Insert conversation_messages inbound
-    API->>Auth: Lookup phone -> whatsapp_authorizations
-    alt Nomor terotorisasi
-        Auth-->>API: Authorization context
-        API->>A: Start assistant run
-        A->>DB: Insert assistant_runs status=running
-        A->>A: Classify intent
-        alt Intent rutin dan didukung bot
-            A->>T: Execute GetSalesSummary
-            T-->>A: Structured data
-            A->>A: Compose direct response
-        else Butuh AI
-            A->>T: Execute tool plan
-            T-->>A: Structured data
-            A->>LLM: Compose grounded response
-            LLM-->>A: Final draft
-        end
-        A->>DB: Insert assistant_tool_executions
-        A->>DB: Update assistant_runs status=completed
-        A-->>API: Final answer
-        API->>DB: Insert conversation_messages outbound
-        API->>WA: Send reply
-        WA-->>O: Reply sent
-    else Nomor tidak terotorisasi
-        Auth-->>API: Unauthorized
-        API->>DB: Log unauthorized attempt
+    API->>Auth: Validate phone -> company
+    Auth-->>API: Authorization context
+    API->>A: Start assistant run
+    alt Intent rutin
+        A->>T: Execute GetSalesSummary(company_id, branch optional)
+        T-->>A: Structured data
+        A->>A: Compose direct response
+    else Butuh AI
+        A->>T: Execute tool plan
+        T-->>A: Structured data
+        A->>LLM: Compose grounded response
+        LLM-->>A: Final draft
     end
+    A-->>API: Final answer
+    API->>WA: Send reply
 ```
 
----
-
-### 3.7 Knowledge Query (Quick Mode)
+### 3.8 Knowledge Query
 
 ```mermaid
 sequenceDiagram
@@ -206,24 +196,18 @@ sequenceDiagram
     participant LLM as OpenAI API
     participant DB as MySQL
 
-    O->>WA: "Apa kebijakan retur barang kita?"
+    O->>WA: Apa SOP retur barang?
     WA->>API: Forward inbound message
     API->>A: Start assistant run
-    A->>A: Detect policy_qna intent
-    A->>RAG: GetPolicyAnswerReference
-    RAG->>DB: Query knowledge_chunks tenant-scoped
-    DB-->>RAG: Top relevant chunks
+    A->>RAG: GetPolicyAnswerReference(company_id)
+    RAG->>DB: Query knowledge company-scoped
+    DB-->>RAG: Relevant chunks
     RAG-->>A: Retrieval result
     A->>LLM: Compose grounded answer
     LLM-->>A: Final draft
-    A->>DB: Update assistant_runs status=completed
-    A-->>API: Final answer
-    API->>WA: Send reply
 ```
 
----
-
-### 3.8 Order -> Stock Integration
+### 3.9 Order -> Stock Integration
 
 ```mermaid
 sequenceDiagram
@@ -231,96 +215,46 @@ sequenceDiagram
     participant S as Stock Service
     participant DB as MySQL
 
-    O->>O: Status order berubah ke group yang memengaruhi stok
     O->>S: Trigger stock movement policy
-    S->>DB: Insert inventory_movements
-    S->>DB: Update inventory_balances
+    S->>DB: Insert inventory_movements for branch
+    S->>DB: Update inventory_balances for branch
     DB-->>S: Updated
-    S-->>O: Success
 ```
 
 ---
 
-### 3.9 Switch Role
+## 4. Non-Happy Path
 
-```mermaid
-sequenceDiagram
-    participant U as User
-    participant W as React Web
-    participant API as NestJS API
-    participant DB as MySQL
-
-    U->>W: Pilih role lain
-    W->>API: POST /auth/switch-role
-    API->>DB: Validate membership role
-    DB-->>API: Role valid
-    API-->>W: Updated active role
-    W->>W: Refresh permission state
-    W-->>U: Menu dan halaman menyesuaikan
-```
-
----
-
-## 4. Flow Non-Happy Path
-
-### 4.1 WhatsApp Gateway Disconnect
+### 4.1 Assistant Tool Failure
 
 ```mermaid
 flowchart TD
-    A[Gateway disconnected] --> B[Log system_event_logs]
-    B --> C[Update whatsapp_channels.session_status = disconnected]
-    C --> D[Retry reconnect dengan backoff]
-    D --> E{Reconnected?}
-    E -->|Ya| F[Update status = connected]
-    E -->|Tidak| G[Alert admin internal]
-    G --> H[Pesan baru dijawab dengan fallback operasional]
-```
-
----
-
-### 4.2 Assistant Tool Failure
-
-```mermaid
-flowchart TD
-    A[Assistant memanggil tool] --> B{Tool berhasil?}
+    A[Assistant memanggil tool] --> B{Berhasil?}
     B -->|Ya| C[Compose jawaban normal]
-    B -->|Timeout atau Error| D[Log di assistant_tool_executions status=failed]
-    D --> E{Intent masih bisa dijawab bot?}
-    E -->|Ya| F[Fallback ke jalur bot]
-    E -->|Tidak| G[Compose jawaban jujur dan aman]
-    F --> H[Kirim ke owner via WhatsApp]
-    G --> H
-    H --> I[Update assistant_runs status=completed atau failed]
+    B -->|Tidak| D[Log tool failure]
+    D --> E[Jawab jujur bahwa data tidak bisa diambil]
 ```
 
----
-
-### 4.3 Data Ambigu / Parsial
+### 4.2 Branch Access Invalid
 
 ```mermaid
 flowchart TD
-    A[Owner bertanya] --> B{Intent jelas?}
-    B -->|Ya| C[Eksekusi tool langsung]
-    B -->|Ambigu ringan| D[Jawab dengan asumsi + sebutkan asumsi]
-    B -->|Ambigu tinggi| E[Minta klarifikasi maksimal 1 pertanyaan]
-    C --> F{Data lengkap?}
-    F -->|Ya| G[Jawab lengkap]
-    F -->|Parsial| H[Jawab parsial + jelaskan keterbatasan]
-    D --> G
-    E --> I[Tunggu jawaban owner lalu proses ulang]
+    A[User request data] --> B{Cabang aktif valid?}
+    B -->|Ya| C[Lanjut proses]
+    B -->|Tidak| D[Return 403 atau paksa pilih cabang]
 ```
 
 ---
 
 ## 5. Ringkasan Referensi Silang
 
-| Flow | API Endpoints | Tools | DB Tables |
-|------|---------------|-------|-----------|
-| Login | /auth/login, /auth/me | - | users, tenant_user_memberships, roles |
-| Product Create | /items (POST) | - | items, item_categories |
-| Order Create | /orders (POST) | - | orders, order_items, order_status_history |
-| Status Change | /orders/:id/status | - | orders, order_status_history, order_status_transitions |
-| Stock Adjustment | /stock/adjustments (POST) | - | inventory_movements, inventory_balances |
-| WA Sales Query | - | GetSalesSummary | orders, assistant_runs, assistant_tool_executions |
-| WA Knowledge Query | - | GetPolicyAnswerReference | knowledge_chunks, assistant_runs |
-| Order -> Stock | Internal trigger | - | inventory_movements, inventory_balances |
+| Flow | Endpoint / Tool | Tabel Utama |
+|------|------------------|-------------|
+| Login | `/auth/login` | users, company_user_memberships, membership_branch_accesses |
+| Branch switch | `/auth/switch-branch` | user_sessions, membership_branch_accesses |
+| Product create | `/items` | items |
+| Order create | `/orders` | orders, order_items, order_status_history |
+| Status change | `/orders/:id/status` | orders, order_status_history |
+| Stock adjustment | `/stock/adjustments` | inventory_movements, inventory_balances |
+| WA query | tool calls | assistant_runs, assistant_tool_executions |
+| Knowledge query | GetPolicyAnswerReference | knowledge_chunks |
