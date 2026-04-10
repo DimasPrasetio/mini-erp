@@ -1,0 +1,14 @@
+{
+  "name": "mini-erp",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev:web": "npm run dev --workspace @mini-erp/web",
+    "build:web": "npm run build --workspace @mini-erp/web"
+  }
+}
+
