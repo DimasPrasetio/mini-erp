@@ -2,14 +2,20 @@ import {
   createContext,
   useContext,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type ReactNode,
 } from "react";
 import { cloneDatabase, INITIAL_SESSION } from "./initial-data";
-import { getDefaultRole, hasPermission, ROLE_PERMISSIONS } from "./permissions";
+import { getDefaultRole, getRolePermissions, hasPermission } from "./permissions";
 import type {
   AuditLog,
+  Branch,
+  BranchData,
+  BusinessParty,
+  Company,
+  CompanyData,
   DemoUser,
   Item,
   KnowledgeDocument,
@@ -20,13 +26,11 @@ import type {
   Order,
   PermissionCode,
   RoleCode,
+  RoleDefinition,
   StatusDefinition,
   StatusTransition,
-  Tenant,
-  TenantData,
   ToastMessage,
   WhatsappAuthorization,
-  BusinessParty,
 } from "../types";
 
 type ItemInput = Omit<Item, "id"> & { id?: string };
@@ -40,10 +44,12 @@ type MembershipFormInput = {
   displayTitle: string;
   status: "active" | "inactive";
   roleCodes: RoleCode[];
+  branchIds: string[];
 };
-type OrderInput = Omit<Order, "id" | "history" | "subtotalAmount" | "discountAmount" | "totalAmount"> & {
-  id?: string;
-};
+type OrderInput = Omit<
+  Order,
+  "id" | "history" | "subtotalAmount" | "discountAmount" | "totalAmount"
+> & { id?: string };
 type StockAdjustmentInput = {
   itemId: string;
   movementType: MovementType;
@@ -55,31 +61,51 @@ type TransitionInput = Omit<StatusTransition, "id"> & { id?: string };
 type PartyInput = Omit<BusinessParty, "id"> & { id?: string };
 type KnowledgeInput = Omit<KnowledgeDocument, "id" | "uploadedAt"> & { id?: string };
 type WhatsappInput = Omit<WhatsappAuthorization, "id"> & { id?: string };
+type CategoryInput = {
+  id?: string;
+  name: string;
+  code: string;
+  parentCategoryId?: string;
+};
+type RoleDefinitionInput = {
+  code?: RoleCode;
+  name: string;
+  description: string;
+  isSystem?: boolean;
+};
+
+type AccessibleBranch = {
+  branch: Branch;
+  displayTitle: string;
+  availableRoles: RoleCode[];
+  isDefaultBranch?: boolean;
+};
+
+type WorkspaceData = CompanyData & BranchData;
 
 type MockAppContextValue = {
   database: MockDatabase;
   session: MockSession;
   activeUser?: DemoUser;
-  activeTenant?: Tenant;
-  activeTenantData?: TenantData;
+  activeCompany?: Company;
+  activeCompanyData?: CompanyData;
+  activeBranch?: Branch;
+  activeBranchData?: BranchData;
+  activeWorkspaceData?: WorkspaceData;
   activeRoleCode?: RoleCode;
   permissions: PermissionCode[];
-  availableTenants: Array<{
-    tenant: Tenant;
-    displayTitle: string;
-    availableRoles: RoleCode[];
-    isDefaultTenant?: boolean;
-  }>;
+  accessibleBranches: AccessibleBranch[];
+  activeBranchMemberships: MembershipRecord[];
   availableRoles: RoleCode[];
   isAuthenticated: boolean;
   toasts: ToastMessage[];
   login: (identifier: string, password: string) => {
     ok: boolean;
     error?: string;
-    requiresTenantSelection: boolean;
+    requiresBranchSelection: boolean;
   };
   logout: () => void;
-  selectTenant: (tenantId: string) => void;
+  selectBranch: (branchId: string) => void;
   switchRole: (roleCode: RoleCode) => boolean;
   can: (permission?: PermissionCode) => boolean;
   findUserById: (userId?: string) => DemoUser | undefined;
@@ -94,44 +120,82 @@ type MockAppContextValue = {
   saveUserMembership: (input: MembershipFormInput) => void;
   setMembershipStatus: (membershipId: string, status: "active" | "inactive") => void;
   saveBusinessParty: (input: PartyInput) => string;
-  saveSettings: (settings: TenantData["settings"]) => void;
+  saveSettings: (settings: CompanyData["settings"]) => void;
   saveStatusDefinition: (input: StatusInput) => void;
   saveStatusTransition: (input: TransitionInput) => void;
   saveKnowledgeDocument: (input: KnowledgeInput) => void;
   archiveKnowledgeDocument: (documentId: string) => void;
   saveWhatsappAuthorization: (input: WhatsappInput) => void;
   revokeWhatsappAuthorization: (authorizationId: string) => void;
-  updateTenantData: (mutator: (tenantData: TenantData) => TenantData) => void;
+  saveRoleDefinition: (input: RoleDefinitionInput) => void;
+  deleteRoleDefinition: (roleCode: RoleCode) => void;
+  saveRolePermissions: (roleCode: RoleCode, permissions: PermissionCode[]) => void;
+  saveItemCategory: (input: CategoryInput) => void;
+  saveBranch: (input: Partial<Branch> & { name: string; code: string; city: string; address: string; defaultStockLocationLabel: string }) => void;
+  updateCompanyData: (mutator: (companyData: CompanyData) => CompanyData) => void;
+  updateBranchData: (mutator: (branchData: BranchData) => BranchData) => void;
+  updateWorkspaceData: (mutator: (workspaceData: WorkspaceData) => WorkspaceData) => void;
 };
 
 const MockAppContext = createContext<MockAppContextValue | undefined>(undefined);
 
-const STORAGE_KEY = "mini-erp-phase0-state";
+const STORAGE_KEY = "mini-erp-phase0-b2-state";
 
-function loadState() {
-  if (typeof window === "undefined") {
-    return {
-      database: cloneDatabase(),
-      session: INITIAL_SESSION,
-    };
+function findMembershipId(companyData: CompanyData, userId?: string) {
+  return companyData.memberships.find((membership) => membership.userId === userId)?.id;
+}
+
+function resolveActiveRoleCode(sessionRoleCode: RoleCode | undefined, availableRoles: RoleCode[]) {
+  if (sessionRoleCode && availableRoles.includes(sessionRoleCode)) {
+    return sessionRoleCode;
   }
 
-  const raw = window.localStorage.getItem(STORAGE_KEY);
+  if (availableRoles.length > 0) {
+    return getDefaultRole(availableRoles);
+  }
 
+  return undefined;
+}
+
+function updateUserCompanyMembership(
+  memberships: DemoUser["memberships"],
+  companyId: string,
+  displayTitle: string,
+  availableRoles: RoleCode[],
+  branchIds: string[],
+  defaultBranchId: string | undefined,
+) {
+  return memberships.map((membership) =>
+    membership.companyId === companyId
+      ? {
+          ...membership,
+          displayTitle,
+          availableRoles,
+          branchIds,
+          defaultBranchId,
+        }
+      : membership,
+  );
+}
+
+function loadState() {
+  if (globalThis.window === undefined) {
+    return { database: cloneDatabase(), session: INITIAL_SESSION };
+  }
+
+  const raw = globalThis.localStorage.getItem(STORAGE_KEY);
   if (!raw) {
-    return {
-      database: cloneDatabase(),
-      session: INITIAL_SESSION,
-    };
+    return { database: cloneDatabase(), session: INITIAL_SESSION };
   }
 
   try {
-    return JSON.parse(raw) as { database: MockDatabase; session: MockSession };
+    const parsed = JSON.parse(raw) as { database: MockDatabase; session: MockSession };
+    if (!parsed.database.company || !parsed.database.companyData || !parsed.database.branchData) {
+      throw new Error("stale-state");
+    }
+    return parsed;
   } catch {
-    return {
-      database: cloneDatabase(),
-      session: INITIAL_SESSION,
-    };
+    return { database: cloneDatabase(), session: INITIAL_SESSION };
   }
 }
 
@@ -157,7 +221,21 @@ function makeId(prefix: string) {
   return `${prefix}-${crypto.randomUUID()}`;
 }
 
-export function MockAppProvider({ children }: { children: ReactNode }) {
+function makeRoleCode(name: string) {
+  return name
+    .trim()
+    .toLowerCase()
+    .replaceAll(/[^a-z0-9]+/g, "_")
+    .replaceAll(/^_+|_+$/g, "");
+}
+
+function makeOrderNumber(branchCode: string) {
+  const dateCode = new Date().toISOString().slice(0, 10).replaceAll("-", "");
+  const serial = Math.floor(Math.random() * 900 + 100);
+  return `${branchCode}-ORD-${dateCode}-${serial}`;
+}
+
+export function MockAppProvider({ children }: Readonly<{ children: ReactNode }>) {
   const loaded = loadState();
   const [database, setDatabase] = useState<MockDatabase>(loaded.database);
   const [session, setSession] = useState<MockSession>(loaded.session);
@@ -165,7 +243,7 @@ export function MockAppProvider({ children }: { children: ReactNode }) {
   const toastTimers = useRef<Record<string, number>>({});
 
   useEffect(() => {
-    window.localStorage.setItem(
+    globalThis.localStorage.setItem(
       STORAGE_KEY,
       JSON.stringify({
         database,
@@ -176,53 +254,65 @@ export function MockAppProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     return () => {
-      Object.values(toastTimers.current).forEach((timer) => window.clearTimeout(timer));
+      Object.values(toastTimers.current).forEach((timer) => globalThis.clearTimeout(timer));
     };
   }, []);
 
   const activeUser = database.users.find((user) => user.id === session.userId);
-  const availableTenants: MockAppContextValue["availableTenants"] =
-    activeUser?.memberships.flatMap((membership) => {
-      const tenant = database.tenants.find((entry) => entry.id === membership.tenantId);
-      if (!tenant) {
+  const activeCompany = activeUser ? database.company : undefined;
+  const activeMembership = activeUser?.memberships.find(
+    (membership) => membership.companyId === database.company.id,
+  );
+  const accessibleBranches: AccessibleBranch[] =
+    activeMembership?.branchIds.flatMap((branchId) => {
+      const branch = database.branches.find((entry) => entry.id === branchId);
+      if (!branch) {
         return [];
       }
 
       return [
         {
-          tenant,
-          displayTitle: membership.displayTitle,
-          availableRoles: membership.availableRoles,
-          isDefaultTenant: membership.isDefaultTenant,
+          branch,
+          displayTitle: activeMembership.displayTitle,
+          availableRoles: activeMembership.availableRoles,
+          isDefaultBranch: activeMembership.defaultBranchId === branch.id,
         },
       ];
     }) ?? [];
-
-  const activeTenant =
-    database.tenants.find((tenant) => tenant.id === session.activeTenantId) ??
-    availableTenants.find((entry) => entry.isDefaultTenant)?.tenant;
-
-  const activeMembership = activeUser?.memberships.find(
-    (membership) => membership.tenantId === activeTenant?.id,
-  );
+  const activeBranch =
+    database.branches.find((branch) => branch.id === session.activeBranchId) ??
+    (accessibleBranches.length === 1 ? accessibleBranches[0]?.branch : undefined);
   const availableRoles = activeMembership?.availableRoles ?? [];
-  const activeRoleCode =
-    session.activeRoleCode && availableRoles.includes(session.activeRoleCode)
-      ? session.activeRoleCode
-      : availableRoles.length > 0
-        ? getDefaultRole(availableRoles)
-        : undefined;
-  const permissions = activeRoleCode ? ROLE_PERMISSIONS[activeRoleCode] : [];
-  const activeTenantData = activeTenant ? database.tenantData[activeTenant.id] : undefined;
+  const activeRoleCode = resolveActiveRoleCode(session.activeRoleCode, availableRoles);
+  const activeCompanyData = activeCompany ? database.companyData : undefined;
+  const activeBranchData = activeBranch ? database.branchData[activeBranch.id] : undefined;
+  const activeWorkspaceData =
+    activeCompanyData && activeBranchData
+      ? ({
+          ...activeCompanyData,
+          ...activeBranchData,
+        } as WorkspaceData)
+      : undefined;
+  const permissions = getRolePermissions(activeRoleCode, activeCompanyData?.rolePermissions);
+  const activeBranchMemberships =
+    activeCompanyData && activeBranch
+      ? activeCompanyData.memberships.filter(
+          (membership) =>
+            membership.status === "active" && membership.branchIds.includes(activeBranch.id),
+        )
+      : [];
 
   function notify(title: string, description?: string, tone: ToastMessage["tone"] = "info") {
     const id = makeId("toast");
-
     setToasts((current) => [...current, { id, title, description, tone }]);
-    toastTimers.current[id] = window.setTimeout(() => {
-      setToasts((current) => current.filter((toast) => toast.id !== id));
-      delete toastTimers.current[id];
+    toastTimers.current[id] = globalThis.setTimeout(() => {
+      dismissToast(id);
     }, 3400);
+  }
+
+  function dismissToast(id: string) {
+    setToasts((current) => current.filter((toast) => toast.id !== id));
+    delete toastTimers.current[id];
   }
 
   function findUserById(userId?: string) {
@@ -230,25 +320,25 @@ export function MockAppProvider({ children }: { children: ReactNode }) {
   }
 
   function findMembershipName(membershipId?: string) {
-    if (!membershipId || !activeTenantData) {
+    if (!membershipId || !activeCompanyData) {
       return "-";
     }
 
-    const membership = activeTenantData.memberships.find((entry) => entry.id === membershipId);
+    const membership = activeCompanyData.memberships.find((entry) => entry.id === membershipId);
     const user = findUserById(membership?.userId);
     return user?.fullName ?? membership?.displayTitle ?? "-";
   }
 
   function findItemName(itemId?: string) {
-    if (!itemId || !activeTenantData) {
+    if (!itemId || !activeCompanyData) {
       return "-";
     }
 
-    return activeTenantData.items.find((item) => item.id === itemId)?.itemName ?? "-";
+    return activeCompanyData.items.find((item) => item.id === itemId)?.itemName ?? "-";
   }
 
   function can(permission?: PermissionCode) {
-    return hasPermission(activeRoleCode, permission);
+    return hasPermission(activeRoleCode, permission, activeCompanyData?.rolePermissions);
   }
 
   function login(identifier: string, password: string) {
@@ -258,30 +348,35 @@ export function MockAppProvider({ children }: { children: ReactNode }) {
         entry.username.toLowerCase() === normalized || entry.email.toLowerCase() === normalized,
     );
 
-    if (!user || user.password !== password) {
+    if (user?.password !== password) {
       return {
         ok: false,
         error: "Username, email, atau password tidak cocok.",
-        requiresTenantSelection: false,
+        requiresBranchSelection: false,
       };
     }
 
-    const defaultMembership =
-      user.memberships.find((membership) => membership.isDefaultTenant) ?? user.memberships[0];
-    const requiresTenantSelection = user.memberships.length > 1;
+    const membership = user.memberships.find((entry) => entry.companyId === database.company.id);
+    if (!membership) {
+      return {
+        ok: false,
+        error: "Akun ini belum punya akses perusahaan.",
+        requiresBranchSelection: false,
+      };
+    }
 
+    const requiresBranchSelection = membership.branchIds.length > 1;
     setSession({
       userId: user.id,
-      activeTenantId: requiresTenantSelection ? undefined : defaultMembership?.tenantId,
-      activeRoleCode:
-        requiresTenantSelection || !defaultMembership
-          ? undefined
-          : getDefaultRole(defaultMembership.availableRoles),
+      activeBranchId: requiresBranchSelection
+        ? undefined
+        : membership.defaultBranchId ?? membership.branchIds[0],
+      activeRoleCode: getDefaultRole(membership.availableRoles),
     });
 
     return {
       ok: true,
-      requiresTenantSelection,
+      requiresBranchSelection,
     };
   }
 
@@ -290,22 +385,25 @@ export function MockAppProvider({ children }: { children: ReactNode }) {
     notify("Logout berhasil", "Sesi mockup dibersihkan.", "success");
   }
 
-  function selectTenant(tenantId: string) {
-    const membership = activeUser?.memberships.find((entry) => entry.tenantId === tenantId);
-    if (!membership) {
+  function selectBranch(branchId: string) {
+    const hasAccess = accessibleBranches.some((entry) => entry.branch.id === branchId);
+    if (!hasAccess) {
+      notify("Cabang tidak tersedia", "Anda tidak memiliki akses ke cabang tersebut.", "danger");
       return;
     }
 
     setSession((current) => ({
       ...current,
-      activeTenantId: tenantId,
-      activeRoleCode: getDefaultRole(membership.availableRoles),
+      activeBranchId: branchId,
+      activeRoleCode:
+        current.activeRoleCode ?? (availableRoles.length > 0 ? getDefaultRole(availableRoles) : undefined),
     }));
+    notify("Cabang aktif diperbarui", "Semua data operasional sekarang mengikuti cabang terpilih.", "success");
   }
 
   function switchRole(roleCode: RoleCode) {
     if (!availableRoles.includes(roleCode)) {
-      notify("Role tidak tersedia", "Role ini tidak terdaftar pada tenant aktif.", "danger");
+      notify("Role tidak tersedia", "Role ini tidak terdaftar pada akses Anda.", "danger");
       return false;
     }
 
@@ -317,26 +415,72 @@ export function MockAppProvider({ children }: { children: ReactNode }) {
     return true;
   }
 
-  function updateTenantData(mutator: (tenantData: TenantData) => TenantData) {
-    if (!activeTenant) {
+  function updateCompanyData(mutator: (companyData: CompanyData) => CompanyData) {
+    setDatabase((current) => ({
+      ...current,
+      companyData: mutator(current.companyData),
+    }));
+  }
+
+  function updateBranchData(mutator: (branchData: BranchData) => BranchData) {
+    if (!activeBranch) {
       return;
     }
 
     setDatabase((current) => ({
       ...current,
-      tenantData: {
-        ...current.tenantData,
-        [activeTenant.id]: mutator(current.tenantData[activeTenant.id]),
+      branchData: {
+        ...current.branchData,
+        [activeBranch.id]: mutator(current.branchData[activeBranch.id]),
+      },
+    }));
+  }
+
+  function updateWorkspaceData(mutator: (workspaceData: WorkspaceData) => WorkspaceData) {
+    if (!activeCompanyData || !activeBranchData || !activeBranch) {
+      return;
+    }
+
+    const nextWorkspace = mutator({
+      ...activeCompanyData,
+      ...activeBranchData,
+    });
+
+    setDatabase((current) => ({
+      ...current,
+      companyData: {
+        memberships: nextWorkspace.memberships,
+        roleDefinitions: nextWorkspace.roleDefinitions,
+        rolePermissions: nextWorkspace.rolePermissions,
+        itemCategories: nextWorkspace.itemCategories,
+        items: nextWorkspace.items,
+        businessParties: nextWorkspace.businessParties,
+        statusDefinitions: nextWorkspace.statusDefinitions,
+        statusTransitions: nextWorkspace.statusTransitions,
+        knowledgeDocuments: nextWorkspace.knowledgeDocuments,
+        whatsappAuthorizations: nextWorkspace.whatsappAuthorizations,
+        auditLogs: nextWorkspace.auditLogs,
+        settings: nextWorkspace.settings,
+        whatsappChannelStatus: nextWorkspace.whatsappChannelStatus,
+      },
+      branchData: {
+        ...current.branchData,
+        [activeBranch.id]: {
+          orders: nextWorkspace.orders,
+          stockBalances: nextWorkspace.stockBalances,
+          stockMovements: nextWorkspace.stockMovements,
+        },
       },
     }));
   }
 
   function appendAuditLog(
-    tenantData: TenantData,
+    companyData: CompanyData,
     actionKey: string,
     entityType: string,
     entityLabel: string,
     description: string,
+    branchAware = false,
   ): AuditLog[] {
     return [
       {
@@ -348,28 +492,29 @@ export function MockAppProvider({ children }: { children: ReactNode }) {
         entityType,
         entityLabel,
         description,
+        branchId: branchAware ? activeBranch?.id : undefined,
+        branchName: branchAware ? activeBranch?.name : undefined,
       },
-      ...tenantData.auditLogs,
+      ...companyData.auditLogs,
     ];
   }
 
   function saveItem(input: ItemInput) {
     const itemId = input.id ?? makeId("item");
 
-    updateTenantData((tenantData) => {
+    updateCompanyData((companyData) => {
       const nextItem = {
         ...input,
         id: itemId,
       };
-      const items = input.id
-        ? tenantData.items.map((item) => (item.id === input.id ? nextItem : item))
-        : [nextItem, ...tenantData.items];
 
       return {
-        ...tenantData,
-        items,
+        ...companyData,
+        items: input.id
+          ? companyData.items.map((item) => (item.id === input.id ? nextItem : item))
+          : [nextItem, ...companyData.items],
         auditLogs: appendAuditLog(
-          tenantData,
+          companyData,
           input.id ? "product.update" : "product.create",
           "product",
           nextItem.itemName,
@@ -380,7 +525,7 @@ export function MockAppProvider({ children }: { children: ReactNode }) {
 
     notify(
       input.id ? "Produk diperbarui" : "Produk ditambahkan",
-      "Perubahan tersimpan di data dummy tenant aktif.",
+      "Perubahan tersimpan di data perusahaan aktif.",
       "success",
     );
 
@@ -388,15 +533,15 @@ export function MockAppProvider({ children }: { children: ReactNode }) {
   }
 
   function archiveItem(itemId: string) {
-    updateTenantData((tenantData) => {
-      const item = tenantData.items.find((entry) => entry.id === itemId);
+    updateCompanyData((companyData) => {
+      const item = companyData.items.find((entry) => entry.id === itemId);
       return {
-        ...tenantData,
-        items: tenantData.items.map((entry) =>
+        ...companyData,
+        items: companyData.items.map((entry) =>
           entry.id === itemId ? { ...entry, status: "inactive" } : entry,
         ),
         auditLogs: appendAuditLog(
-          tenantData,
+          companyData,
           "product.archive",
           "product",
           item?.itemName ?? "Produk",
@@ -408,101 +553,128 @@ export function MockAppProvider({ children }: { children: ReactNode }) {
   }
 
   function saveOrder(input: OrderInput) {
-    if (!activeTenantData || !activeUser) {
+    if (!activeBranchData || !activeCompanyData || !activeUser || !activeBranch) {
       return "";
     }
 
     const orderId = input.id ?? makeId("order");
-    const totals = sumOrderTotal(input, activeTenantData.items);
+    const orderNumber = input.orderNumber || makeOrderNumber(activeBranch.code);
+    const totals = sumOrderTotal(input, activeCompanyData.items);
     const initialStatus =
       input.currentStatusId ||
-      activeTenantData.statusDefinitions.find((status) => status.isInitial)?.id ||
-      activeTenantData.statusDefinitions[0]?.id;
+      activeCompanyData.statusDefinitions.find((status) => status.isInitial)?.id ||
+      activeCompanyData.statusDefinitions[0]?.id;
 
-    updateTenantData((tenantData) => {
-      const order: Order = {
-        ...input,
-        id: orderId,
-        currentStatusId: initialStatus,
-        ...totals,
-        history: input.id
-          ? tenantData.orders.find((entry) => entry.id === input.id)?.history ?? []
-          : [
+    updateBranchData((branchData) => ({
+      ...branchData,
+      orders: input.id
+        ? branchData.orders.map((entry) =>
+            entry.id === input.id
+              ? {
+                  ...input,
+                  id: orderId,
+                  orderNumber,
+                  currentStatusId: initialStatus,
+                  ...totals,
+                  history: entry.history,
+                }
+              : entry,
+          )
+        : [
             {
-              id: makeId("history"),
-              toStatusId: initialStatus,
-              changedAt: nowIso(),
-              changedByMembershipId:
-                tenantData.memberships.find((membership) => membership.userId === activeUser.id)?.id,
-              changeReason: "Order dibuat dari mock form.",
+              ...input,
+              id: orderId,
+              orderNumber,
+              currentStatusId: initialStatus,
+              ...totals,
+              history: [
+                {
+                  id: makeId("history"),
+                  toStatusId: initialStatus,
+                  changedAt: nowIso(),
+                  changedByMembershipId:
+                    activeCompanyData.memberships.find((membership) => membership.userId === activeUser.id)
+                      ?.id,
+                  changeReason: "Order dibuat dari mock form.",
+                },
+              ],
             },
+            ...branchData.orders,
           ],
-      };
+    }));
 
-      const orders = input.id
-        ? tenantData.orders.map((entry) => (entry.id === input.id ? order : entry))
-        : [order, ...tenantData.orders];
+    updateCompanyData((companyData) => ({
+      ...companyData,
+      auditLogs: appendAuditLog(
+        companyData,
+        input.id ? "order.update" : "order.create",
+        "order",
+        orderNumber,
+        input.id ? "Order diperbarui dari mock form." : "Order baru dibuat dari mock form.",
+        true,
+      ),
+    }));
 
-      return {
-        ...tenantData,
-        orders,
-        auditLogs: appendAuditLog(
-          tenantData,
-          input.id ? "order.update" : "order.create",
-          "order",
-          order.orderNumber,
-          input.id ? "Order diperbarui dari mock form." : "Order baru dibuat dari mock form.",
-        ),
-      };
-    });
-
-    notify(input.id ? "Order diperbarui" : "Order dibuat", "Data mock order telah disimpan.", "success");
+    notify("Order tersimpan", "Data order telah disimpan pada cabang aktif.", "success");
     return orderId;
   }
 
   function updateOrderStatus(orderId: string, toStatusId: string, changeReason?: string) {
-    updateTenantData((tenantData) => {
-      const order = tenantData.orders.find((entry) => entry.id === orderId);
-      const nextStatus = tenantData.statusDefinitions.find((status) => status.id === toStatusId);
-      if (!order || !nextStatus) {
-        return tenantData;
-      }
+    if (!activeBranchData || !activeCompanyData) {
+      return;
+    }
 
-      const updatedOrder = {
-        ...order,
-        currentStatusId: toStatusId,
-        history: [
-          {
-            id: makeId("history"),
-            fromStatusId: order.currentStatusId,
-            toStatusId,
-            changedAt: nowIso(),
-            changedByMembershipId:
-              tenantData.memberships.find((membership) => membership.userId === activeUser?.id)?.id,
-            changeReason,
-          },
-          ...order.history,
-        ],
-      };
+    const order = activeBranchData.orders.find((entry) => entry.id === orderId);
+    const nextStatus = activeCompanyData.statusDefinitions.find((status) => status.id === toStatusId);
+    if (!order || !nextStatus) {
+      return;
+    }
 
-      return {
-        ...tenantData,
-        orders: tenantData.orders.map((entry) => (entry.id === orderId ? updatedOrder : entry)),
-        auditLogs: appendAuditLog(
-          tenantData,
-          "order.update",
-          "order",
-          order.orderNumber,
-          `Status order diubah ke ${nextStatus.label}.`,
-        ),
-      };
-    });
+    updateBranchData((branchData) => ({
+      ...branchData,
+      orders: branchData.orders.map((entry) =>
+        entry.id === orderId
+          ? {
+              ...entry,
+              currentStatusId: toStatusId,
+              history: [
+                {
+                  id: makeId("history"),
+                  fromStatusId: entry.currentStatusId,
+                  toStatusId,
+                  changedAt: nowIso(),
+                  changedByMembershipId: findMembershipId(activeCompanyData, activeUser?.id),
+                  changeReason,
+                },
+                ...entry.history,
+              ],
+            }
+          : entry,
+      ),
+    }));
+
+    updateCompanyData((companyData) => ({
+      ...companyData,
+      auditLogs: appendAuditLog(
+        companyData,
+        "order.update",
+        "order",
+        order.orderNumber,
+        `Status order diubah ke ${nextStatus.label}.`,
+        true,
+      ),
+    }));
+
     notify("Status order diperbarui", "Riwayat status langsung ter-refresh.", "success");
   }
 
   function saveStockAdjustment(input: StockAdjustmentInput) {
-    updateTenantData((tenantData) => {
-      const balance = tenantData.stockBalances.find((entry) => entry.itemId === input.itemId);
+    if (!activeBranchData || !activeCompanyData) {
+      return;
+    }
+
+    updateBranchData((branchData) => {
+      const balance = branchData.stockBalances.find((entry) => entry.itemId === input.itemId);
       const currentOnHand = balance?.onHandQty ?? 0;
       const delta =
         input.movementType === "out" ? -Math.abs(input.quantity) : Math.abs(input.quantity);
@@ -517,11 +689,6 @@ export function MockAppProvider({ children }: { children: ReactNode }) {
         availableQty: Math.max(nextOnHand - reservedQty, 0),
         updatedAt: nowIso(),
       };
-
-      const stockBalances = balance
-        ? tenantData.stockBalances.map((entry) => (entry.itemId === input.itemId ? nextBalance : entry))
-        : [nextBalance, ...tenantData.stockBalances];
-
       const movement = {
         id: makeId("movement"),
         itemId: input.itemId,
@@ -531,126 +698,142 @@ export function MockAppProvider({ children }: { children: ReactNode }) {
         balanceAfter: nextOnHand,
         referenceType: "manual_adjustment" as const,
         reasonText: input.reasonText,
-        movedByMembershipId:
-          tenantData.memberships.find((membership) => membership.userId === activeUser?.id)?.id,
+        movedByMembershipId: findMembershipId(activeCompanyData, activeUser?.id),
         movedAt: nowIso(),
       };
 
       return {
-        ...tenantData,
-        stockBalances,
-        stockMovements: [movement, ...tenantData.stockMovements],
-        auditLogs: appendAuditLog(
-          tenantData,
-          "stock.adjust",
-          "stock",
-          findItemName(input.itemId),
-          `Stok disesuaikan melalui form mock (${input.movementType}).`,
-        ),
+        ...branchData,
+        stockBalances: balance
+          ? branchData.stockBalances.map((entry) =>
+              entry.itemId === input.itemId ? nextBalance : entry,
+            )
+          : [nextBalance, ...branchData.stockBalances],
+        stockMovements: [movement, ...branchData.stockMovements],
       };
     });
 
-    notify("Penyesuaian stok tersimpan", "Saldo item diperbarui di data dummy.", "success");
+    updateCompanyData((companyData) => ({
+      ...companyData,
+      auditLogs: appendAuditLog(
+        companyData,
+        "stock.adjust",
+        "stock",
+        findItemName(input.itemId),
+        `Stok disesuaikan melalui form mock (${input.movementType}).`,
+        true,
+      ),
+    }));
+
+    notify("Penyesuaian stok tersimpan", "Saldo item diperbarui pada cabang aktif.", "success");
   }
 
   function saveUserMembership(input: MembershipFormInput) {
-    if (!activeTenant) {
+    if (!activeCompanyData) {
       return;
     }
 
     setDatabase((current) => {
-      const tenantData = current.tenantData[activeTenant.id];
       const membershipId = input.id ?? makeId("membership");
-      let userId = input.userId ?? makeId("user");
-      let users = current.users;
+      const roleCodes = input.roleCodes.length > 0 ? input.roleCodes : ["staff"];
+      const branchIds = input.branchIds.length > 0 ? input.branchIds : current.branches.map((branch) => branch.id);
+      const defaultBranchId = branchIds[0];
+      const userId = input.userId ?? makeId("user");
 
-      if (input.userId) {
-        users = current.users.map((user) =>
-          user.id === input.userId
-            ? {
-              ...user,
+      const users = input.userId
+        ? current.users.map((user) =>
+            user.id === input.userId
+              ? {
+                  ...user,
+                  fullName: input.fullName,
+                  email: input.email,
+                  username: input.username,
+                  phone: input.phone ?? user.phone,
+                  memberships: updateUserCompanyMembership(
+                    user.memberships,
+                    current.company.id,
+                    input.displayTitle,
+                    roleCodes,
+                    branchIds,
+                    defaultBranchId,
+                  ),
+                }
+              : user,
+          )
+        : [
+            ...current.users,
+            {
+              id: userId,
               fullName: input.fullName,
               email: input.email,
               username: input.username,
-              phone: input.phone ?? user.phone,
-              memberships: user.memberships.map((membership) =>
-                membership.tenantId === activeTenant.id
-                  ? {
-                    ...membership,
-                    displayTitle: input.displayTitle,
-                    availableRoles: input.roleCodes,
-                  }
-                  : membership,
-              ),
-            }
-            : user,
-        );
-      } else {
-        users = [
-          ...current.users,
-          {
-            id: userId,
-            fullName: input.fullName,
-            email: input.email,
-            username: input.username,
-            password: "demo123",
-            phone: input.phone ?? "",
-            memberships: [
-              {
-                tenantId: activeTenant.id,
-                displayTitle: input.displayTitle,
-                availableRoles: input.roleCodes,
-              },
-            ],
-          },
-        ];
-      }
-
-      const nextMembership: MembershipRecord = {
-        id: membershipId,
-        userId,
-        displayTitle: input.displayTitle,
-        status: input.status,
-        roleCodes: input.roleCodes,
-      };
+              password: "demo123",
+              phone: input.phone ?? "",
+              memberships: [
+                {
+                  companyId: current.company.id,
+                  displayTitle: input.displayTitle,
+                  availableRoles: roleCodes,
+                  branchIds,
+                  defaultBranchId,
+                },
+              ],
+            },
+          ];
 
       return {
         ...current,
         users,
-        tenantData: {
-          ...current.tenantData,
-          [activeTenant.id]: {
-            ...tenantData,
-            memberships: input.id
-              ? tenantData.memberships.map((membership) =>
-                membership.id === input.id ? nextMembership : membership,
+        companyData: {
+          ...current.companyData,
+          memberships: input.id
+            ? current.companyData.memberships.map((membership) =>
+                membership.id === input.id
+                  ? {
+                      id: membershipId,
+                      userId,
+                      displayTitle: input.displayTitle,
+                      status: input.status,
+                      roleCodes,
+                      branchIds,
+                    }
+                  : membership,
               )
-              : [nextMembership, ...tenantData.memberships],
-            auditLogs: appendAuditLog(
-              tenantData,
-              input.id ? "user.update" : "user.create",
-              "user",
-              input.fullName,
-              input.id ? "Data pengguna diperbarui." : "Pengguna baru ditambahkan ke tenant.",
-            ),
-          },
+            : [
+                {
+                  id: membershipId,
+                  userId,
+                  displayTitle: input.displayTitle,
+                  status: input.status,
+                  roleCodes,
+                  branchIds,
+                },
+                ...current.companyData.memberships,
+              ],
+          auditLogs: appendAuditLog(
+            current.companyData,
+            input.id ? "user.update" : "user.create",
+            "user",
+            input.fullName,
+            input.id ? "Data pengguna diperbarui." : "Pengguna baru ditambahkan ke perusahaan.",
+          ),
         },
       };
     });
 
-    notify("Data pengguna tersimpan", "Perubahan anggota tenant berhasil diterapkan.", "success");
+    notify("Data pengguna tersimpan", "Akses role dan cabang berhasil diperbarui.", "success");
   }
 
   function setMembershipStatus(membershipId: string, status: "active" | "inactive") {
-    updateTenantData((tenantData) => {
-      const membership = tenantData.memberships.find((entry) => entry.id === membershipId);
+    updateCompanyData((companyData) => {
+      const membership = companyData.memberships.find((entry) => entry.id === membershipId);
       return {
-        ...tenantData,
-        memberships: tenantData.memberships.map((entry) =>
+        ...companyData,
+        memberships: companyData.memberships.map((entry) =>
           entry.id === membershipId ? { ...entry, status } : entry,
         ),
         auditLogs: appendAuditLog(
-          tenantData,
+          companyData,
           "user.update",
           "user",
           findUserById(membership?.userId)?.fullName ?? "Pengguna",
@@ -658,27 +841,21 @@ export function MockAppProvider({ children }: { children: ReactNode }) {
         ),
       };
     });
-    notify("Status pengguna diperbarui", "Daftar anggota tenant langsung ter-refresh.", "success");
+    notify("Status pengguna diperbarui", "Daftar anggota perusahaan langsung ter-refresh.", "success");
   }
 
   function saveBusinessParty(input: PartyInput) {
     const partyId = input.id ?? makeId("party");
 
-    updateTenantData((tenantData) => {
-      const nextParty = {
-        ...input,
-        id: partyId,
-      };
-
-      const businessParties = input.id
-        ? tenantData.businessParties.map((party) => (party.id === input.id ? nextParty : party))
-        : [nextParty, ...tenantData.businessParties];
-
+    updateCompanyData((companyData) => {
+      const nextParty = { ...input, id: partyId };
       return {
-        ...tenantData,
-        businessParties,
+        ...companyData,
+        businessParties: input.id
+          ? companyData.businessParties.map((party) => (party.id === input.id ? nextParty : party))
+          : [nextParty, ...companyData.businessParties],
         auditLogs: appendAuditLog(
-          tenantData,
+          companyData,
           input.id ? "business_party.update" : "business_party.create",
           "business_party",
           nextParty.name,
@@ -689,67 +866,129 @@ export function MockAppProvider({ children }: { children: ReactNode }) {
 
     notify(
       input.id ? "Kontak diperbarui" : "Kontak ditambahkan",
-      "Perubahan tersimpan di data mock aktif.",
+      "Perubahan tersimpan di data perusahaan aktif.",
       "success",
     );
 
     return partyId;
   }
 
-  function saveSettings(settings: TenantData["settings"]) {
-    updateTenantData((tenantData) => ({
-      ...tenantData,
+  function saveSettings(settings: CompanyData["settings"]) {
+    updateCompanyData((companyData) => ({
+      ...companyData,
       settings,
       auditLogs: appendAuditLog(
-        tenantData,
-        "tenant_config.manage",
-        "tenant_settings",
-        activeTenant?.name ?? "Tenant",
-        "Konfigurasi tenant diperbarui dari halaman mock settings.",
+        companyData,
+        "company_config.manage",
+        "company_settings",
+        activeCompany?.name ?? "Perusahaan",
+        "Konfigurasi perusahaan diperbarui dari halaman settings.",
       ),
     }));
-    notify("Pengaturan diperbarui", "Konfigurasi tenant tersimpan di state lokal.", "success");
+    notify("Pengaturan diperbarui", "Konfigurasi perusahaan tersimpan di state lokal.", "success");
+  }
+
+  function saveItemCategory(input: CategoryInput) {
+    updateWorkspaceData((ws) => {
+      const categoryId = input.id ?? makeId("category");
+      const nextCategory = {
+        id: categoryId,
+        code: input.code,
+        name: input.name,
+        parentCategoryId: input.parentCategoryId || undefined,
+        sortOrder: input.id
+          ? (ws.itemCategories.find((c) => c.id === input.id)?.sortOrder ?? ws.itemCategories.length + 1)
+          : ws.itemCategories.length + 1,
+      };
+      return {
+        ...ws,
+        itemCategories: input.id
+          ? ws.itemCategories.map((c) => (c.id === input.id ? nextCategory : c))
+          : [...ws.itemCategories, nextCategory],
+      };
+    });
+    notify(
+      input.id ? "Kategori diperbarui" : "Kategori ditambahkan",
+      `Kategori "${input.name}" berhasil disimpan.`,
+      "success",
+    );
+  }
+
+  function saveBranch(input: Partial<Branch> & { name: string; code: string; city: string; address: string; defaultStockLocationLabel: string }) {
+    const branchId = input.id ?? makeId("branch");
+    const nextBranch: Branch = {
+      id: branchId,
+      code: input.code,
+      name: input.name,
+      city: input.city,
+      address: input.address,
+      defaultStockLocationLabel: input.defaultStockLocationLabel,
+      isDefault: input.isDefault ?? false,
+    };
+
+    setDatabase((current) => ({
+      ...current,
+      branches: input.id
+        ? current.branches.map((branch) => (branch.id === input.id ? nextBranch : branch))
+        : [...current.branches, nextBranch],
+      branchData: input.id
+        ? current.branchData
+        : {
+            ...current.branchData,
+            [branchId]: {
+              orders: [],
+              stockBalances: [],
+              stockMovements: [],
+            },
+          },
+    }));
+
+    notify(
+      input.id ? "Cabang diperbarui" : "Cabang ditambahkan",
+      `Cabang ${nextBranch.name} berhasil ${input.id ? "diperbarui" : "ditambahkan"}.`,
+      "success",
+    );
   }
 
   function saveStatusDefinition(input: StatusInput) {
-    updateTenantData((tenantData) => {
+    updateCompanyData((companyData) => {
       const statusId = input.id ?? makeId("status");
       const nextStatus = { ...input, id: statusId };
       return {
-        ...tenantData,
+        ...companyData,
         statusDefinitions: input.id
-          ? tenantData.statusDefinitions.map((status) =>
-            status.id === input.id ? nextStatus : status,
-          )
-          : [...tenantData.statusDefinitions, nextStatus].sort(
-            (left, right) => left.sortOrder - right.sortOrder,
-          ),
+          ? companyData.statusDefinitions.map((status) =>
+              status.id === input.id ? nextStatus : status,
+            )
+          : [...companyData.statusDefinitions, nextStatus].sort(
+              (left, right) => left.sortOrder - right.sortOrder,
+            ),
         auditLogs: appendAuditLog(
-          tenantData,
-          "tenant_config.manage",
+          companyData,
+          "company_config.manage",
           "order_status_definition",
           nextStatus.label,
           input.id ? "Status order diperbarui." : "Status order baru ditambahkan.",
         ),
       };
     });
-    notify("Status order disimpan", "Daftar status tenant sudah diperbarui.", "success");
+    notify("Status order disimpan", "Daftar status perusahaan sudah diperbarui.", "success");
   }
 
   function saveStatusTransition(input: TransitionInput) {
-    updateTenantData((tenantData) => {
+    updateCompanyData((companyData) => {
       const transitionId = input.id ?? makeId("transition");
       const nextTransition = { ...input, id: transitionId };
       return {
-        ...tenantData,
+        ...companyData,
         statusTransitions: input.id
-          ? tenantData.statusTransitions.map((transition) =>
-            transition.id === input.id ? nextTransition : transition,
-          )
-          : [...tenantData.statusTransitions, nextTransition],
+          ? companyData.statusTransitions.map((transition) =>
+              transition.id === input.id ? nextTransition : transition,
+            )
+          : [...companyData.statusTransitions, nextTransition],
         auditLogs: appendAuditLog(
-          tenantData,
-          "tenant_config.manage",
+          companyData,
+          "company_config.manage",
           "order_status_transition",
           nextTransition.transitionLabel,
           input.id ? "Transisi status diperbarui." : "Transisi status baru dibuat.",
@@ -760,24 +999,25 @@ export function MockAppProvider({ children }: { children: ReactNode }) {
   }
 
   function saveKnowledgeDocument(input: KnowledgeInput) {
-    updateTenantData((tenantData) => {
+    updateCompanyData((companyData) => {
       const documentId = input.id ?? makeId("knowledge");
       const nextDocument = {
         ...input,
         id: documentId,
         uploadedAt: input.id
-          ? tenantData.knowledgeDocuments.find((document) => document.id === input.id)?.uploadedAt ?? nowIso()
+          ? companyData.knowledgeDocuments.find((document) => document.id === input.id)?.uploadedAt ??
+            nowIso()
           : nowIso(),
       };
       return {
-        ...tenantData,
+        ...companyData,
         knowledgeDocuments: input.id
-          ? tenantData.knowledgeDocuments.map((document) =>
-            document.id === input.id ? nextDocument : document,
-          )
-          : [nextDocument, ...tenantData.knowledgeDocuments],
+          ? companyData.knowledgeDocuments.map((document) =>
+              document.id === input.id ? nextDocument : document,
+            )
+          : [nextDocument, ...companyData.knowledgeDocuments],
         auditLogs: appendAuditLog(
-          tenantData,
+          companyData,
           input.id ? "knowledge.update" : "knowledge.create",
           "knowledge_document",
           nextDocument.title,
@@ -793,15 +1033,15 @@ export function MockAppProvider({ children }: { children: ReactNode }) {
   }
 
   function archiveKnowledgeDocument(documentId: string) {
-    updateTenantData((tenantData) => {
-      const document = tenantData.knowledgeDocuments.find((entry) => entry.id === documentId);
+    updateCompanyData((companyData) => {
+      const document = companyData.knowledgeDocuments.find((entry) => entry.id === documentId);
       return {
-        ...tenantData,
-        knowledgeDocuments: tenantData.knowledgeDocuments.map((entry) =>
+        ...companyData,
+        knowledgeDocuments: companyData.knowledgeDocuments.map((entry) =>
           entry.id === documentId ? { ...entry, status: "archived" } : entry,
         ),
         auditLogs: appendAuditLog(
-          tenantData,
+          companyData,
           "knowledge.archive",
           "knowledge_document",
           document?.title ?? "Dokumen",
@@ -813,40 +1053,40 @@ export function MockAppProvider({ children }: { children: ReactNode }) {
   }
 
   function saveWhatsappAuthorization(input: WhatsappInput) {
-    updateTenantData((tenantData) => {
+    updateCompanyData((companyData) => {
       const authId = input.id ?? makeId("wa-auth");
       const nextAuthorization = { ...input, id: authId };
       return {
-        ...tenantData,
+        ...companyData,
         whatsappAuthorizations: input.id
-          ? tenantData.whatsappAuthorizations.map((authorization) =>
-            authorization.id === input.id ? nextAuthorization : authorization,
-          )
-          : [nextAuthorization, ...tenantData.whatsappAuthorizations],
+          ? companyData.whatsappAuthorizations.map((authorization) =>
+              authorization.id === input.id ? nextAuthorization : authorization,
+            )
+          : [nextAuthorization, ...companyData.whatsappAuthorizations],
         auditLogs: appendAuditLog(
-          tenantData,
-          input.id ? "whatsapp.manage" : "whatsapp.manage",
+          companyData,
+          "whatsapp.manage",
           "whatsapp_authorization",
           nextAuthorization.userName,
           input.id ? "Otorisasi WhatsApp diperbarui." : "Nomor WhatsApp baru diotorisasi.",
         ),
       };
     });
-    notify("Nomor WhatsApp tersimpan", "Daftar otorisasi tenant berhasil diperbarui.", "success");
+    notify("Nomor WhatsApp tersimpan", "Daftar otorisasi perusahaan berhasil diperbarui.", "success");
   }
 
   function revokeWhatsappAuthorization(authorizationId: string) {
-    updateTenantData((tenantData) => {
-      const authorization = tenantData.whatsappAuthorizations.find(
+    updateCompanyData((companyData) => {
+      const authorization = companyData.whatsappAuthorizations.find(
         (entry) => entry.id === authorizationId,
       );
       return {
-        ...tenantData,
-        whatsappAuthorizations: tenantData.whatsappAuthorizations.map((entry) =>
+        ...companyData,
+        whatsappAuthorizations: companyData.whatsappAuthorizations.map((entry) =>
           entry.id === authorizationId ? { ...entry, status: "revoked" } : entry,
         ),
         auditLogs: appendAuditLog(
-          tenantData,
+          companyData,
           "whatsapp.manage",
           "whatsapp_authorization",
           authorization?.userName ?? "Nomor",
@@ -857,44 +1097,174 @@ export function MockAppProvider({ children }: { children: ReactNode }) {
     notify("Akses dicabut", "Nomor tersebut tidak lagi aktif untuk Quick Mode.", "warning");
   }
 
-  const value: MockAppContextValue = {
-    database,
-    session,
-    activeUser,
-    activeTenant,
-    activeTenantData,
-    activeRoleCode,
-    permissions,
-    availableTenants,
-    availableRoles,
-    isAuthenticated: Boolean(activeUser),
-    toasts,
-    login,
-    logout,
-    selectTenant,
-    switchRole,
-    can,
-    findUserById,
-    findMembershipName,
-    findItemName,
-    notify,
-    saveItem,
-    archiveItem,
-    saveOrder,
-    updateOrderStatus,
-    saveStockAdjustment,
-    saveUserMembership,
-    setMembershipStatus,
-    saveBusinessParty,
-    saveSettings,
-    saveStatusDefinition,
-    saveStatusTransition,
-    saveKnowledgeDocument,
-    archiveKnowledgeDocument,
-    saveWhatsappAuthorization,
-    revokeWhatsappAuthorization,
-    updateTenantData,
-  };
+  function saveRoleDefinition(input: RoleDefinitionInput) {
+    const roleCode = input.code || makeRoleCode(input.name);
+    if (!roleCode) {
+      return;
+    }
+
+    updateCompanyData((companyData) => {
+      const exists = companyData.roleDefinitions.some((role) => role.code === roleCode);
+      const nextRole: RoleDefinition = {
+        code: roleCode,
+        name: input.name,
+        description: input.description,
+        isSystem:
+          input.isSystem ??
+          companyData.roleDefinitions.find((role) => role.code === roleCode)?.isSystem ??
+          false,
+      };
+
+      return {
+        ...companyData,
+        roleDefinitions: exists
+          ? companyData.roleDefinitions.map((role) => (role.code === roleCode ? nextRole : role))
+          : [...companyData.roleDefinitions, nextRole],
+        rolePermissions: companyData.rolePermissions[roleCode]
+          ? companyData.rolePermissions
+          : {
+              ...companyData.rolePermissions,
+              [roleCode]: [],
+            },
+        auditLogs: appendAuditLog(
+          companyData,
+          "role.manage",
+          "role",
+          nextRole.name,
+          exists ? "Role diperbarui dari halaman role." : "Role baru ditambahkan.",
+        ),
+      };
+    });
+
+    notify("Role disimpan", "Daftar role perusahaan telah diperbarui.", "success");
+  }
+
+  function deleteRoleDefinition(roleCode: RoleCode) {
+    if (!activeCompanyData) {
+      return;
+    }
+
+    const role = activeCompanyData.roleDefinitions.find((entry) => entry.code === roleCode);
+    const isUsed = activeCompanyData.memberships.some((membership) =>
+      membership.roleCodes.includes(roleCode),
+    );
+
+    if (!role || role.isSystem || isUsed) {
+      notify(
+        "Role tidak dapat dihapus",
+        isUsed
+          ? "Role ini masih dipakai oleh anggota tim."
+          : "Role bawaan sistem tidak bisa dihapus.",
+        "warning",
+      );
+      return;
+    }
+
+    updateCompanyData((companyData) => {
+      const nextPermissions = { ...companyData.rolePermissions };
+      delete nextPermissions[roleCode];
+      return {
+        ...companyData,
+        roleDefinitions: companyData.roleDefinitions.filter((entry) => entry.code !== roleCode),
+        rolePermissions: nextPermissions,
+        auditLogs: appendAuditLog(
+          companyData,
+          "role.manage",
+          "role",
+          role.name,
+          "Role kustom dihapus dari perusahaan.",
+        ),
+      };
+    });
+
+    notify("Role dihapus", "Role kustom tersebut tidak lagi tersedia.", "warning");
+  }
+
+  function saveRolePermissions(roleCode: RoleCode, nextPermissions: PermissionCode[]) {
+    updateCompanyData((companyData) => ({
+      ...companyData,
+      rolePermissions: {
+        ...companyData.rolePermissions,
+        [roleCode]: nextPermissions,
+      },
+      auditLogs: appendAuditLog(
+        companyData,
+        "role.manage",
+        "role_permission",
+        String(roleCode),
+        "Matriks permission role diperbarui.",
+      ),
+    }));
+    notify("Hak akses diperbarui", "Matriks permission role berhasil disimpan.", "success");
+  }
+
+  const value: MockAppContextValue = useMemo(
+    () => ({
+      database,
+      session,
+      activeUser,
+      activeCompany,
+      activeCompanyData,
+      activeBranch,
+      activeBranchData,
+      activeWorkspaceData,
+      activeRoleCode,
+      permissions,
+      accessibleBranches,
+      activeBranchMemberships,
+      availableRoles,
+      isAuthenticated: Boolean(activeUser),
+      toasts,
+      login,
+      logout,
+      selectBranch,
+      switchRole,
+      can,
+      findUserById,
+      findMembershipName,
+      findItemName,
+      notify,
+      saveItem,
+      archiveItem,
+      saveOrder,
+      updateOrderStatus,
+      saveStockAdjustment,
+      saveUserMembership,
+      setMembershipStatus,
+      saveBusinessParty,
+      saveSettings,
+      saveStatusDefinition,
+      saveStatusTransition,
+      saveKnowledgeDocument,
+      archiveKnowledgeDocument,
+      saveWhatsappAuthorization,
+      revokeWhatsappAuthorization,
+      saveRoleDefinition,
+      deleteRoleDefinition,
+      saveRolePermissions,
+      saveItemCategory,
+      saveBranch,
+      updateCompanyData,
+      updateBranchData,
+      updateWorkspaceData,
+    }),
+    [
+      database,
+      session,
+      activeUser,
+      activeCompany,
+      activeCompanyData,
+      activeBranch,
+      activeBranchData,
+      activeWorkspaceData,
+      activeRoleCode,
+      permissions,
+      accessibleBranches,
+      activeBranchMemberships,
+      availableRoles,
+      toasts,
+    ],
+  );
 
   return <MockAppContext.Provider value={value}>{children}</MockAppContext.Provider>;
 }

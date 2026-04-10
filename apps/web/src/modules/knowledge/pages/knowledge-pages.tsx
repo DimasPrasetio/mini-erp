@@ -1,58 +1,26 @@
 import { useState } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
 import {
   Badge,
   Button,
-  DataTable,
   EmptyState,
-  Notice,
   PageHeader,
   SectionCard,
   SearchableSelect,
 } from "@mini-erp/ui";
 import { useMockApp } from "../../../mock/state";
-import { ROLE_PERMISSIONS } from "../../../mock/permissions";
-import {
-  channelTone,
-  compactNumber,
-  formatCurrency,
-  formatDateTime,
-  formatRoleLabel,
-  safeParseJson,
-  statusTone,
-} from "../../../utils";
-
-const MODULES_LIST = [
-  { key: "dashboard", label: "Dashboard", actions: ["view"] },
-  { key: "product", label: "Produk & Item", actions: ["view", "create", "update", "archive"] },
-  { key: "order", label: "Penjualan / Order", actions: ["view", "create", "update", "archive"] },
-  { key: "stock", label: "Inventori Gudang", actions: ["view", "create", "update"] },
-  { key: "reporting", label: "Laporan Bisnis", actions: ["view"] },
-  { key: "user", label: "Pengguna & Tim", actions: ["view", "create", "update", "archive"] },
-  { key: "tenant_config", label: "Pengaturan", actions: ["view", "manage"] },
-  { key: "knowledge", label: "Basis Pengetahuan (AI)", actions: ["view", "create", "update", "archive"] },
-  { key: "whatsapp", label: "Asisten WA Gateway", actions: ["view", "manage"] },
-  { key: "audit_log", label: "Audit Log", actions: ["view"] },
-];
-
-const ACTIONS = [
-  { key: "view", label: "View" },
-  { key: "create", label: "Create" },
-  { key: "update", label: "Update" },
-  { key: "archive", label: "Archive" },
-  { key: "manage", label: "Manage" },
-];
+import { formatDateTime } from "../../../utils";
 
 export function KnowledgePage() {
   const navigate = useNavigate();
-  const { activeTenantData, archiveKnowledgeDocument, findMembershipName } = useMockApp();
-  const [selectedId, setSelectedId] = useState(activeTenantData?.knowledgeDocuments[0]?.id);
+  const { activeWorkspaceData, archiveKnowledgeDocument, findMembershipName, can } = useMockApp();
+  const [selectedId, setSelectedId] = useState(activeWorkspaceData?.knowledgeDocuments[0]?.id);
 
-  if (!activeTenantData) {
+  if (!activeWorkspaceData) {
     return null;
   }
 
-  const selectedDocument = activeTenantData.knowledgeDocuments.find((document) => document.id === selectedId);
+  const selectedDocument = activeWorkspaceData.knowledgeDocuments.find((document) => document.id === selectedId);
 
   return (
     <div className="page-shell">
@@ -66,7 +34,7 @@ export function KnowledgePage() {
       <div className="split-layout">
         <SectionCard title="Daftar Dokumen" description="Pusat referensi dan panduan operasi.">
           <div className="list-stack">
-            {activeTenantData.knowledgeDocuments.map((document) => (
+            {activeWorkspaceData.knowledgeDocuments.map((document) => (
               <button
                 className="list-item"
                 key={document.id}
@@ -116,9 +84,11 @@ export function KnowledgePage() {
                 <span>Ringkasan</span>
                 <strong>{selectedDocument.summary}</strong>
               </div>
-              <Button onClick={() => archiveKnowledgeDocument(selectedDocument.id)} variant="danger">
-                Arsipkan Dokumen
-              </Button>
+              {can("knowledge.archive") ? (
+                <Button onClick={() => archiveKnowledgeDocument(selectedDocument.id)} variant="danger">
+                  Arsipkan Dokumen
+                </Button>
+              ) : null}
             </div>
           ) : (
             <EmptyState description="Pilih dokumen dari daftar untuk melihat detail." title="Belum ada dokumen terpilih" />
@@ -131,9 +101,9 @@ export function KnowledgePage() {
 
 export function KnowledgeUploadPage() {
   const navigate = useNavigate();
-  const { activeTenantData, saveKnowledgeDocument } = useMockApp();
+  const { activeWorkspaceData, saveKnowledgeDocument } = useMockApp();
 
-  if (!activeTenantData) {
+  if (!activeWorkspaceData) {
     return null;
   }
 
@@ -154,7 +124,7 @@ export function KnowledgeUploadPage() {
             title: String(formData.get("title")),
             documentType: formData.get("documentType") as "sop" | "policy" | "glossary" | "guide",
             status: "processing",
-            uploadedByMembershipId: activeTenantData.memberships[0].id,
+            uploadedByMembershipId: activeWorkspaceData.memberships[0].id,
             summary: String(formData.get("summary")),
             fileName: String(formData.get("fileName")),
           });

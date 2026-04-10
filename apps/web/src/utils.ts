@@ -36,6 +36,8 @@ export function formatDateOnly(value?: string) {
 
 export function formatRoleLabel(role?: string) {
   switch (role) {
+    case "superadmin":
+      return "Superadmin";
     case "owner":
       return "Owner";
     case "admin":
@@ -43,7 +45,13 @@ export function formatRoleLabel(role?: string) {
     case "staff":
       return "Staff";
     default:
-      return "-";
+      return role
+        ? role
+          .split("_")
+          .filter(Boolean)
+          .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+          .join(" ")
+        : "-";
   }
 }
 

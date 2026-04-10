@@ -9,13 +9,13 @@ import {
   useLocation,
   useNavigate,
 } from "react-router-dom";
-import { AppShell, Badge, Button, ToastViewport } from "@mini-erp/ui";
+import { AppShell, Badge, ToastViewport } from "@mini-erp/ui";
 import { useMockApp } from "./mock/state";
 import { getRequiredPermission } from "./route-access";
 import { formatRoleLabel } from "./utils";
-import { ROLE_PERMISSIONS } from "./mock/permissions";
+import { DEFAULT_ROLE_PERMISSIONS } from "./mock/permissions";
 import type { PermissionCode } from "./types";
-import { LoginPage, TenantSelectorPage } from "./modules/auth/pages/auth-pages";
+import { BranchSelectorPage, LoginPage } from "./modules/auth/pages/auth-pages";
 import { DashboardPage } from "./modules/dashboard/pages/dashboard-page";
 import { ItemCategoriesPage, ItemDetailPage, ItemFormPage, ItemsListPage } from "./modules/items/pages/items-pages";
 import { OrderDetailPage, OrderFormPage, OrdersListPage } from "./modules/sales/pages/orders-pages";
@@ -28,7 +28,12 @@ import {
 import { AuditLogsPage } from "./modules/audit-log/pages/audit-log-pages";
 import { ForbiddenPage, NotFoundPage } from "./modules/core/pages/error-pages";
 import { KnowledgePage, KnowledgeUploadPage } from "./modules/knowledge/pages/knowledge-pages";
-import { OrderStatusSettingsPage, SettingsPage } from "./modules/tenant/pages/tenant-pages";
+import {
+  OrderStatusSettingsPage,
+  RolesSettingsPage,
+  SettingsPage,
+} from "./modules/company/pages/company-pages";
+import { BranchesListPage, BranchFormPage } from "./modules/company/pages/branches-pages";
 import { ReportingPage } from "./modules/reporting/pages/reporting-pages";
 import { UserFormPage, UsersListPage } from "./modules/users/pages/users-pages";
 import { WhatsappPage } from "./modules/whatsapp/pages/whatsapp-pages";
@@ -74,7 +79,9 @@ const MENU_GROUPS: Array<{ label: string; items: MenuItem[] }> = [
   {
     label: "Pengaturan",
     items: [
-      { label: "Pengaturan", to: "/settings", permission: "tenant_config.view" },
+      { label: "Pengaturan", to: "/settings", permission: "company_config.view" },
+      { label: "Cabang & Lokasi", to: "/branches", permission: "branch.view" },
+      { label: "Role & Akses", to: "/settings/roles", permission: "role.manage" },
       { label: "Asisten WA", to: "/whatsapp", permission: "whatsapp.view", note: "Quick Mode" },
     ],
   },
@@ -83,19 +90,19 @@ const MENU_GROUPS: Array<{ label: string; items: MenuItem[] }> = [
 function RouteGuard({
   children,
   permission,
-}: {
+}: Readonly<{
   children: React.ReactNode;
   permission?: PermissionCode;
-}) {
+}>) {
   const location = useLocation();
-  const { isAuthenticated, activeTenant, can } = useMockApp();
+  const { isAuthenticated, activeBranch, can } = useMockApp();
 
   if (!isAuthenticated) {
     return <Navigate replace state={{ from: location }} to="/login" />;
   }
 
-  if (!activeTenant) {
-    return <Navigate replace to="/select-tenant" />;
+  if (!activeBranch) {
+    return <Navigate replace state={{ from: location }} to="/select-branch" />;
   }
 
   if (permission && !can(permission)) {
@@ -105,15 +112,26 @@ function RouteGuard({
   return <>{children}</>;
 }
 
-function PublicOnly({ children }: { children: React.ReactNode }) {
-  const { isAuthenticated, activeTenant } = useMockApp();
+function AuthenticatedOnly({ children }: Readonly<{ children: React.ReactNode }>) {
+  const location = useLocation();
+  const { isAuthenticated } = useMockApp();
 
-  if (isAuthenticated && activeTenant) {
+  if (!isAuthenticated) {
+    return <Navigate replace state={{ from: location }} to="/login" />;
+  }
+
+  return <>{children}</>;
+}
+
+function PublicOnly({ children }: Readonly<{ children: React.ReactNode }>) {
+  const { isAuthenticated, activeBranch } = useMockApp();
+
+  if (isAuthenticated && activeBranch) {
     return <Navigate replace to="/dashboard" />;
   }
 
-  if (isAuthenticated && !activeTenant) {
-    return <Navigate replace to="/select-tenant" />;
+  if (isAuthenticated && !activeBranch) {
+    return <Navigate replace to="/select-branch" />;
   }
 
   return <>{children}</>;
@@ -139,11 +157,20 @@ function pageTitle(pathname: string) {
 function AvatarMenu() {
   const navigate = useNavigate();
   const location = useLocation();
-  const { activeRoleCode, activeTenant, activeUser, availableRoles, logout, switchRole } = useMockApp();
+  const {
+    activeBranch,
+    activeCompany,
+    activeRoleCode,
+    activeUser,
+    availableRoles,
+    activeCompanyData,
+    logout,
+    switchRole,
+  } = useMockApp();
   const [open, setOpen] = useState(false);
   const [showRoles, setShowRoles] = useState(false);
 
-  if (!activeUser || !activeTenant) {
+  if (!activeUser || !activeCompany || !activeBranch) {
     return null;
   }
 
@@ -170,7 +197,7 @@ function AvatarMenu() {
             <strong>{activeUser.fullName}</strong>
             <div className="inline-stack">
               <Badge tone="accent">{formatRoleLabel(activeRoleCode)}</Badge>
-              <Badge tone="neutral">{activeTenant.code}</Badge>
+              <Badge tone="neutral">{activeBranch.code}</Badge>
             </div>
           </div>
 
@@ -209,14 +236,18 @@ function AvatarMenu() {
                       style={{ padding: "6px 12px", borderRadius: "4px" }}
                       key={role}
                       onClick={() => {
-                        const changed = switchRole(role);
-                        if (changed) {
-                          const requiredPermission = getRequiredPermission(location.pathname);
-                          const canStay =
-                            !requiredPermission || ROLE_PERMISSIONS[role].includes(requiredPermission);
-                          if (!canStay) {
-                            navigate("/dashboard");
-                          }
+                          const changed = switchRole(role);
+                          if (changed) {
+                            const requiredPermission = getRequiredPermission(location.pathname);
+                            const canStay =
+                              !requiredPermission ||
+                              (activeCompanyData?.rolePermissions[role] ??
+                                DEFAULT_ROLE_PERMISSIONS[role as keyof typeof DEFAULT_ROLE_PERMISSIONS] ??
+                                []
+                              ).includes(requiredPermission);
+                            if (!canStay) {
+                              navigate("/dashboard");
+                            }
                           setOpen(false);
                           setShowRoles(false);
                         }
@@ -255,8 +286,36 @@ function AvatarMenu() {
 }
 
 function ShellLayout() {
+  const navigate = useNavigate();
   const location = useLocation();
-  const { activeTenant, can } = useMockApp();
+  const { activeCompany, activeBranch, accessibleBranches, can } = useMockApp();
+  const canSwitchBranch = accessibleBranches.length > 1;
+  let branchControl: React.ReactNode = null;
+
+  if (activeBranch && canSwitchBranch) {
+    branchControl = (
+      <button
+        className="branch-chip"
+        onClick={() =>
+          navigate("/select-branch", {
+            state: { from: location.pathname },
+          })
+        }
+        style={{ cursor: "pointer" }}
+        type="button"
+      >
+        <span className="muted">Ganti Cabang</span>
+        <strong>{activeBranch.name}</strong>
+      </button>
+    );
+  } else if (activeBranch) {
+    branchControl = (
+      <div className="branch-chip">
+        <span className="muted">Cabang</span>
+        <strong>{activeBranch.name}</strong>
+      </div>
+    );
+  }
 
   const sidebar = (
     <div className="sidebar-panel">
@@ -280,6 +339,7 @@ function ShellLayout() {
             {items.map((item) => (
               <NavLink
                 className={({ isActive }) => `nav-link ${isActive ? "nav-link-active" : ""}`}
+                end={item.to === "/settings"}
                 key={item.to}
                 to={item.to}
               >
@@ -297,16 +357,17 @@ function ShellLayout() {
   const topbar = (
     <div className="topbar-panel">
       <div className="topbar-title">
-        <small>Tenant Aktif</small>
+        <small>Cabang Aktif</small>
         <strong>{pageTitle(location.pathname)}</strong>
       </div>
       <div className="topbar-actions">
-        {activeTenant ? (
-          <div className="tenant-chip">
-            <span className="muted">Workspace</span>
-            <strong>{activeTenant.name}</strong>
+        {activeCompany ? (
+          <div className="branch-chip">
+            <span className="muted">Perusahaan</span>
+            <strong>{activeCompany.name}</strong>
           </div>
         ) : null}
+        {branchControl}
         <AvatarMenu />
       </div>
     </div>
@@ -335,11 +396,11 @@ function AppRoutes() {
         />
         <Route
           element={
-            <RouteGuard>
-              <TenantSelectorPage />
-            </RouteGuard>
+            <AuthenticatedOnly>
+              <BranchSelectorPage />
+            </AuthenticatedOnly>
           }
-          path="/select-tenant"
+          path="/select-branch"
         />
         <Route element={<ShellLayout />}>
           <Route
@@ -488,7 +549,7 @@ function AppRoutes() {
           />
           <Route
             element={
-              <RouteGuard permission="tenant_config.view">
+              <RouteGuard permission="company_config.view">
                 <SettingsPage />
               </RouteGuard>
             }
@@ -496,11 +557,43 @@ function AppRoutes() {
           />
           <Route
             element={
-              <RouteGuard permission="tenant_config.manage">
+              <RouteGuard permission="company_config.manage">
                 <OrderStatusSettingsPage />
               </RouteGuard>
             }
             path="/settings/order-status"
+          />
+          <Route
+            element={
+              <RouteGuard permission="branch.view">
+                <BranchesListPage />
+              </RouteGuard>
+            }
+            path="/branches"
+          />
+          <Route
+            element={
+              <RouteGuard permission="branch.manage">
+                <BranchFormPage />
+              </RouteGuard>
+            }
+            path="/branches/create"
+          />
+          <Route
+            element={
+              <RouteGuard permission="branch.manage">
+                <BranchFormPage />
+              </RouteGuard>
+            }
+            path="/branches/:branchId/edit"
+          />
+          <Route
+            element={
+              <RouteGuard permission="role.manage">
+                <RolesSettingsPage />
+              </RouteGuard>
+            }
+            path="/settings/roles"
           />
           <Route
             element={

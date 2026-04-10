@@ -1,4 +1,5 @@
-export type RoleCode = "owner" | "admin" | "staff";
+export type SystemRoleCode = "superadmin" | "owner" | "admin" | "staff";
+export type RoleCode = SystemRoleCode | (string & {});
 
 export type PermissionCode =
   | "dashboard.view"
@@ -18,8 +19,11 @@ export type PermissionCode =
   | "user.create"
   | "user.update"
   | "user.archive"
-  | "tenant_config.view"
-  | "tenant_config.manage"
+  | "company_config.view"
+  | "company_config.manage"
+  | "branch.view"
+  | "branch.manage"
+  | "role.manage"
   | "knowledge.view"
   | "knowledge.create"
   | "knowledge.update"
@@ -37,7 +41,7 @@ export type PartyType = "customer" | "supplier" | "partner";
 export type MovementType = "in" | "out" | "adjustment";
 export type ToastTone = "info" | "success" | "warning" | "danger";
 
-export type Tenant = {
+export type Company = {
   id: string;
   code: string;
   name: string;
@@ -46,11 +50,22 @@ export type Tenant = {
   locale: string;
 };
 
-export type TenantMembershipRef = {
-  tenantId: string;
+export type Branch = {
+  id: string;
+  code: string;
+  name: string;
+  city: string;
+  address: string;
+  defaultStockLocationLabel: string;
+  isDefault?: boolean;
+};
+
+export type CompanyMembershipRef = {
+  companyId: string;
   displayTitle: string;
   availableRoles: RoleCode[];
-  isDefaultTenant?: boolean;
+  branchIds: string[];
+  defaultBranchId?: string;
 };
 
 export type DemoUser = {
@@ -60,7 +75,7 @@ export type DemoUser = {
   username: string;
   password: string;
   phone: string;
-  memberships: TenantMembershipRef[];
+  memberships: CompanyMembershipRef[];
 };
 
 export type MembershipRecord = {
@@ -69,7 +84,7 @@ export type MembershipRecord = {
   displayTitle: string;
   status: "active" | "inactive";
   roleCodes: RoleCode[];
-  isDefaultTenant?: boolean;
+  branchIds: string[];
 };
 
 export type ItemCategory = {
@@ -215,9 +230,11 @@ export type AuditLog = {
   entityType: string;
   entityLabel: string;
   description: string;
+  branchId?: string;
+  branchName?: string;
 };
 
-export type TenantSettings = {
+export type CompanySettings = {
   businessLabels: {
     itemLabel: string;
     orderLabel: string;
@@ -248,20 +265,26 @@ export type TenantSettings = {
   }[];
 };
 
-export type TenantData = {
+export type RoleDefinition = {
+  code: RoleCode;
+  name: string;
+  description: string;
+  isSystem: boolean;
+};
+
+export type CompanyData = {
   memberships: MembershipRecord[];
+  roleDefinitions: RoleDefinition[];
+  rolePermissions: Record<string, PermissionCode[]>;
   itemCategories: ItemCategory[];
   items: Item[];
   businessParties: BusinessParty[];
   statusDefinitions: StatusDefinition[];
   statusTransitions: StatusTransition[];
-  orders: Order[];
-  stockBalances: StockBalance[];
-  stockMovements: StockMovement[];
   knowledgeDocuments: KnowledgeDocument[];
   whatsappAuthorizations: WhatsappAuthorization[];
   auditLogs: AuditLog[];
-  settings: TenantSettings;
+  settings: CompanySettings;
   whatsappChannelStatus: {
     state: "connected" | "reconnecting" | "disconnected";
     phone: string;
@@ -270,15 +293,23 @@ export type TenantData = {
   };
 };
 
+export type BranchData = {
+  orders: Order[];
+  stockBalances: StockBalance[];
+  stockMovements: StockMovement[];
+};
+
 export type MockDatabase = {
-  tenants: Tenant[];
+  company: Company;
+  branches: Branch[];
   users: DemoUser[];
-  tenantData: Record<string, TenantData>;
+  companyData: CompanyData;
+  branchData: Record<string, BranchData>;
 };
 
 export type MockSession = {
   userId?: string;
-  activeTenantId?: string;
+  activeBranchId?: string;
   activeRoleCode?: RoleCode;
 };
 

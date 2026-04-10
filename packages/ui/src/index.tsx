@@ -362,24 +362,73 @@ export function SearchableSelect({
   className?: string;
   allowCreate?: boolean;
 }) {
+  const SEARCH_BAR_HEIGHT = 44;
+  const GAP = 4;
+  const MIN_LIST_HEIGHT = 120;
+
+  type PopoverPos = {
+    left: number;
+    width: number;
+    listMaxHeight: number;
+  } & ({ top: number; bottom?: never } | { bottom: number; top?: never });
+
   const [internalValue, setInternalValue] = useState(defaultValue ?? value ?? "");
   const [search, setSearch] = useState("");
   const [open, setOpen] = useState(false);
+  const [pos, setPos] = useState<PopoverPos | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (value !== undefined) setInternalValue(value);
   }, [value]);
 
+  function calcPos(): PopoverPos | null {
+    if (!containerRef.current) return null;
+    const rect = containerRef.current.getBoundingClientRect();
+    const vh = window.innerHeight;
+    const spaceBelow = vh - rect.bottom - GAP - 8;
+    const spaceAbove = rect.top - GAP - 8;
+    const openUpward = spaceAbove > spaceBelow && spaceBelow < MIN_LIST_HEIGHT + SEARCH_BAR_HEIGHT;
+
+    if (openUpward) {
+      return {
+        bottom: vh - rect.top + GAP,
+        left: rect.left,
+        width: rect.width,
+        listMaxHeight: Math.max(MIN_LIST_HEIGHT, spaceAbove - SEARCH_BAR_HEIGHT),
+      };
+    }
+    return {
+      top: rect.bottom + GAP,
+      left: rect.left,
+      width: rect.width,
+      listMaxHeight: Math.max(MIN_LIST_HEIGHT, spaceBelow - SEARCH_BAR_HEIGHT),
+    };
+  }
+
   useEffect(() => {
-    function handleClickOutside(event: MouseEvent) {
+    function handleClose(event: MouseEvent) {
       if (containerRef.current && !containerRef.current.contains(event.target as Node)) {
         setOpen(false);
       }
     }
-    document.addEventListener("mousedown", handleClickOutside);
-    return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, []);
+    function handleReposition() {
+      if (open) setPos(calcPos());
+    }
+    document.addEventListener("mousedown", handleClose);
+    window.addEventListener("scroll", handleReposition, true);
+    window.addEventListener("resize", handleReposition);
+    return () => {
+      document.removeEventListener("mousedown", handleClose);
+      window.removeEventListener("scroll", handleReposition, true);
+      window.removeEventListener("resize", handleReposition);
+    };
+  }, [open]);
+
+  const handleToggle = () => {
+    if (!open) setPos(calcPos());
+    setOpen((o) => !o);
+  };
 
   const handleSelect = (val: string) => {
     setInternalValue(val);
@@ -393,25 +442,34 @@ export function SearchableSelect({
   const filteredOptions = options.filter((o) => o.label.toLowerCase().includes(search.toLowerCase()));
 
   return (
-    <div className={["searchable-select", className].filter(Boolean).join(" ")} ref={containerRef} style={{ minWidth: "200px" }}>
+    <div className={["searchable-select", className].filter(Boolean).join(" ")} ref={containerRef}>
       {name ? <input type="hidden" name={name} id={id} value={internalValue} /> : null}
 
       <button
         type="button"
         className="input searchable-select-trigger"
-        onClick={() => setOpen((o) => !o)}
-        style={{ display: "flex", justifyContent: "space-between", alignItems: "center", width: "100%", textAlign: "left", cursor: "pointer", background: "var(--bg-surface)" }}
+        onClick={handleToggle}
       >
-        <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: internalValue ? "var(--text-strong)" : "var(--text-muted)", fontSize: "0.95rem" }}>
+        <span className="searchable-select-label" data-empty={!internalValue ? "true" : "false"}>
           {selectedLabel}
         </span>
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ transform: open ? "rotate(180deg)" : "none", transition: "transform 0.2s ease", flexShrink: 0, marginLeft: "8px" }}>
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="searchable-select-chevron" style={{ transform: open ? "rotate(180deg)" : undefined }}>
           <polyline points="6 9 12 15 18 9"></polyline>
         </svg>
       </button>
 
-      {open ? (
-        <div className="searchable-select-popover">
+      {open && pos ? (
+        <div
+          className="searchable-select-popover"
+          style={{
+            position: "fixed",
+            top: pos.top,
+            bottom: pos.bottom,
+            left: pos.left,
+            width: pos.width,
+            zIndex: 9999,
+          }}
+        >
           <div className="searchable-select-search">
             <input
               autoFocus
@@ -421,7 +479,7 @@ export function SearchableSelect({
               placeholder="Cari..."
             />
           </div>
-          <div className="searchable-select-list">
+          <div className="searchable-select-list" style={{ maxHeight: pos.listMaxHeight }}>
             {filteredOptions.map((opt) => (
               <button
                 key={opt.value}

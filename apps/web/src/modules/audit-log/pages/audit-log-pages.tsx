@@ -1,52 +1,11 @@
-import { useState } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
-import {
-  Badge,
-  Button,
-  DataTable,
-  EmptyState,
-  Notice,
-  PageHeader,
-  SectionCard,
-  SearchableSelect,
-} from "@mini-erp/ui";
+import { DataTable, PageHeader, SectionCard } from "@mini-erp/ui";
 import { useMockApp } from "../../../mock/state";
-import { ROLE_PERMISSIONS } from "../../../mock/permissions";
-import {
-  channelTone,
-  compactNumber,
-  formatCurrency,
-  formatDateTime,
-  formatRoleLabel,
-  safeParseJson,
-  statusTone,
-} from "../../../utils";
-
-const MODULES_LIST = [
-  { key: "dashboard", label: "Dashboard", actions: ["view"] },
-  { key: "product", label: "Produk & Item", actions: ["view", "create", "update", "archive"] },
-  { key: "order", label: "Penjualan / Order", actions: ["view", "create", "update", "archive"] },
-  { key: "stock", label: "Inventori Gudang", actions: ["view", "create", "update"] },
-  { key: "reporting", label: "Laporan Bisnis", actions: ["view"] },
-  { key: "user", label: "Pengguna & Tim", actions: ["view", "create", "update", "archive"] },
-  { key: "tenant_config", label: "Pengaturan", actions: ["view", "manage"] },
-  { key: "knowledge", label: "Basis Pengetahuan (AI)", actions: ["view", "create", "update", "archive"] },
-  { key: "whatsapp", label: "Asisten WA Gateway", actions: ["view", "manage"] },
-  { key: "audit_log", label: "Audit Log", actions: ["view"] },
-];
-
-const ACTIONS = [
-  { key: "view", label: "View" },
-  { key: "create", label: "Create" },
-  { key: "update", label: "Update" },
-  { key: "archive", label: "Archive" },
-  { key: "manage", label: "Manage" },
-];
+import { formatDateTime } from "../../../utils";
 
 export function AuditLogsPage() {
-  const { activeTenantData } = useMockApp();
+  const { activeWorkspaceData } = useMockApp();
 
-  if (!activeTenantData) {
+  if (!activeWorkspaceData) {
     return null;
   }
 
@@ -88,7 +47,7 @@ export function AuditLogsPage() {
             },
           ]}
           rowKey={(entry) => entry.id}
-          rows={activeTenantData.auditLogs}
+          rows={activeWorkspaceData.auditLogs}
         />
       </SectionCard>
     </div>

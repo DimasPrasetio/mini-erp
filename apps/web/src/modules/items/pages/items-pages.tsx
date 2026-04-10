@@ -1,4 +1,4 @@
-import { useState } from "react";
+import React, { useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
   Badge,
@@ -14,34 +14,36 @@ import {
 } from "@mini-erp/ui";
 import { useMockApp } from "../../../mock/state";
 import type { Item } from "../../../types";
-import { formatCurrency, formatDateTime } from "../../../utils";
+import { formatCurrency } from "../../../utils";
 
-function parseAttributes(value: string) {
-  return value
-    .split("\n")
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .reduce<Record<string, string>>((result, line) => {
-      const [key, ...rest] = line.split(":");
-      if (key && rest.length > 0) {
-        result[key.trim()] = rest.join(":").trim();
-      }
-      return result;
-    }, {});
+type AttributeField = {
+  id: string;
+  name: string;
+  value: string;
+};
+
+function createAttributeField(name = "", value = ""): AttributeField {
+  return { id: `attribute-${crypto.randomUUID()}`, name, value };
 }
 
-function stringifyAttributes(attributes: Record<string, string>) {
-  return Object.entries(attributes)
-    .map(([key, value]) => `${key}: ${value}`)
-    .join("\n");
+function updateAttributeName(attributes: AttributeField[], attributeId: string, name: string) {
+  return attributes.map((entry) => (entry.id === attributeId ? { ...entry, name } : entry));
+}
+
+function updateAttributeValue(attributes: AttributeField[], attributeId: string, value: string) {
+  return attributes.map((entry) => (entry.id === attributeId ? { ...entry, value } : entry));
+}
+
+function removeAttribute(attributes: AttributeField[], attributeId: string) {
+  return attributes.filter((entry) => entry.id !== attributeId);
 }
 
 export function ItemsListPage() {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
-  const { activeTenantData, can } = useMockApp();
+  const { activeWorkspaceData, can } = useMockApp();
 
-  if (!activeTenantData) {
+  if (!activeWorkspaceData) {
     return null;
   }
 
@@ -50,7 +52,7 @@ export function ItemsListPage() {
   const status = searchParams.get("status") ?? "active";
   const stockTracked = searchParams.get("stock_tracked") ?? "";
 
-  const items = activeTenantData.items.filter((item) => {
+  const items = activeWorkspaceData.items.filter((item) => {
     const matchesSearch =
       search.length === 0 ||
       item.itemCode.toLowerCase().includes(search) ||
@@ -183,7 +185,7 @@ export function ItemsListPage() {
               {
                 header: "Kategori",
                 render: (item) =>
-                  activeTenantData.itemCategories.find((entry) => entry.id === item.categoryId)?.name ?? "-",
+                  activeWorkspaceData.itemCategories.find((entry) => entry.id === item.categoryId)?.name ?? "-",
               },
               {
                 header: "Tipe",
@@ -197,7 +199,7 @@ export function ItemsListPage() {
               {
                 header: "Stok",
                 render: (item) => {
-                  const balance = activeTenantData.stockBalances.find((entry) => entry.itemId === item.id);
+                  const balance = activeWorkspaceData.stockBalances.find((entry) => entry.itemId === item.id);
                   return item.stockTracked ? (
                     <div className="field-stack">
                       <span className="strong">{balance?.availableQty ?? 0} tersedia</span>
@@ -245,21 +247,21 @@ export function ItemsListPage() {
 export function ItemDetailPage() {
   const navigate = useNavigate();
   const { itemId } = useParams();
-  const { activeTenantData, archiveItem, can } = useMockApp();
+  const { activeWorkspaceData, archiveItem, can } = useMockApp();
   const [archiveOpen, setArchiveOpen] = useState(false);
 
-  if (!activeTenantData) {
+  if (!activeWorkspaceData) {
     return null;
   }
 
-  const item = activeTenantData.items.find((entry) => entry.id === itemId);
-  const balance = activeTenantData.stockBalances.find((entry) => entry.itemId === itemId);
-  const category = activeTenantData.itemCategories.find((entry) => entry.id === item?.categoryId);
+  const item = activeWorkspaceData.items.find((entry) => entry.id === itemId);
+  const balance = activeWorkspaceData.stockBalances.find((entry) => entry.itemId === itemId);
+  const category = activeWorkspaceData.itemCategories.find((entry) => entry.id === item?.categoryId);
 
   if (!item) {
     return (
       <Notice tone="danger" title="Produk tidak ditemukan">
-        Produk yang Anda cari tidak ada di tenant aktif.
+        Produk yang Anda cari tidak tersedia pada context perusahaan saat ini.
       </Notice>
     );
   }
@@ -384,13 +386,21 @@ export function ItemDetailPage() {
 export function ItemFormPage() {
   const navigate = useNavigate();
   const { itemId } = useParams();
-  const { activeTenantData, saveItem } = useMockApp();
-  const existing = activeTenantData?.items.find((entry) => entry.id === itemId);
-  const [attributes, setAttributes] = useState(stringifyAttributes(existing?.attributes ?? {}));
+  const { activeWorkspaceData, saveItem } = useMockApp();
+  const existing = activeWorkspaceData?.items.find((entry) => entry.id === itemId);
 
-  if (!activeTenantData) {
+  const [attributes, setAttributes] = useState<AttributeField[]>(() => {
+    if (!existing?.attributes) return [];
+    return Object.entries(existing.attributes).map(([name, value]) => createAttributeField(name, value));
+  });
+
+  if (!activeWorkspaceData) {
     return null;
   }
+
+  const attributeKeySuggestions = Array.from(
+    new Set(activeWorkspaceData.items.flatMap((item) => Object.keys(item.attributes))),
+  ).map((key) => ({ label: key, value: key }));
 
   return (
     <div className="page-shell">
@@ -414,6 +424,12 @@ export function ItemFormPage() {
         onSubmit={(event) => {
           event.preventDefault();
           const formData = new FormData(event.currentTarget);
+          const attrsRecord: Record<string, string> = {};
+          attributes.forEach((attr) => {
+            if (attr.name.trim()) {
+              attrsRecord[attr.name.trim()] = attr.value;
+            }
+          });
           const savedId = saveItem({
             id: existing?.id,
             categoryId: (formData.get("categoryId") as string) || undefined,
@@ -425,7 +441,7 @@ export function ItemFormPage() {
             uom: String(formData.get("uom")),
             minStockQty: Number(formData.get("minStockQty")) || undefined,
             standardPrice: Number(formData.get("standardPrice")) || undefined,
-            attributes: parseAttributes(attributes),
+            attributes: attrsRecord,
             summary: String(formData.get("summary")),
           });
           navigate(`/items/${savedId}`);
@@ -449,7 +465,7 @@ export function ItemFormPage() {
                 defaultValue={existing?.categoryId ?? ""}
                 options={[
                   { value: "", label: "Tanpa kategori" },
-                  ...activeTenantData.itemCategories.map((category) => ({
+                  ...activeWorkspaceData.itemCategories.map((category) => ({
                     value: category.id,
                     label: category.name,
                   })),
@@ -507,16 +523,62 @@ export function ItemFormPage() {
               <label htmlFor="summary">Ringkasan operasional</label>
               <textarea className="textarea" defaultValue={existing?.summary ?? ""} id="summary" name="summary" placeholder="Tulis konteks bisnis singkat produk ini." />
             </div>
-            <div className="field form-grid-full">
-              <label htmlFor="attributes">Atribut ringan</label>
-              <textarea
-                className="textarea"
-                id="attributes"
-                onChange={(event) => setAttributes(event.target.value)}
-                placeholder={"brand: Sawargi\nsegment: Retail grosir"}
-                value={attributes}
-              />
-              <span className="helper-text">Tulis satu atribut per baris dengan format key: value.</span>
+          </div>
+        </SectionCard>
+
+        <SectionCard
+          title="Atribut Produk"
+          description="Catat data spesifik produk seperti brand, segmen pasar, bahan baku, dsb."
+        >
+          <div className="list-stack">
+            {attributes.map((attr) => (
+              <div
+                key={attr.id}
+                className="split-layout"
+                style={{ alignItems: "flex-end", gap: "12px", borderBottom: "1px dashed var(--border-subtle)", paddingBottom: "12px" }}
+              >
+                <div className="field">
+                  <label htmlFor={`item-attribute-name-${attr.id}`}>Nama Atribut (Contoh: Brand)</label>
+                  <SearchableSelect
+                    id={`item-attribute-name-${attr.id}`}
+                    options={attributeKeySuggestions}
+                    value={attr.name}
+                    onChange={(val) => setAttributes((current) => updateAttributeName(current, attr.id, val))}
+                    placeholder="Pilih atau ketik..."
+                    allowCreate={true}
+                  />
+                </div>
+                <div className="field">
+                  <label htmlFor={`item-attribute-value-${attr.id}`}>Keterangan</label>
+                  <div style={{ display: "flex", gap: "8px" }}>
+                    <input
+                      className="input"
+                      id={`item-attribute-value-${attr.id}`}
+                      style={{ flex: 1 }}
+                      value={attr.value}
+                      onChange={(e) => setAttributes((current) => updateAttributeValue(current, attr.id, e.target.value))}
+                      placeholder="Isi nilai atribut"
+                    />
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      onClick={() => setAttributes((current) => removeAttribute(current, attr.id))}
+                      style={{ color: "var(--color-danger)" }}
+                    >
+                      Hapus
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            ))}
+            <div>
+              <Button
+                type="button"
+                variant="secondary"
+                onClick={() => setAttributes((current) => [...current, createAttributeField()])}
+              >
+                + Tambah Atribut Baru
+              </Button>
             </div>
           </div>
         </SectionCard>
@@ -532,98 +594,243 @@ export function ItemFormPage() {
   );
 }
 
+type CategoryNode = {
+  id: string;
+  code: string;
+  name: string;
+  parentCategoryId?: string;
+  sortOrder: number;
+  depth: number;
+  children: CategoryNode[];
+};
+
+function buildCategoryTree(
+  categories: { id: string; code: string; name: string; parentCategoryId?: string; sortOrder: number }[],
+  parentId: string | undefined = undefined,
+  depth = 0,
+): CategoryNode[] {
+  return categories
+    .filter((c) => c.parentCategoryId === parentId)
+    .sort((a, b) => a.sortOrder - b.sortOrder)
+    .map((c) => ({
+      ...c,
+      depth,
+      children: buildCategoryTree(categories, c.id, depth + 1),
+    }));
+}
+
+function flattenCategoryTree(nodes: CategoryNode[]): CategoryNode[] {
+  return nodes.flatMap((node) => [node, ...flattenCategoryTree(node.children)]);
+}
+
+function getDescendantIds(nodes: CategoryNode[], targetId: string): string[] {
+  const target = flattenCategoryTree(nodes).find((n) => n.id === targetId);
+  if (!target) return [];
+  return [target.id, ...flattenCategoryTree(target.children).map((n) => n.id)];
+}
+
+type CategoryTreeNodeProps = {
+  node: CategoryNode;
+  onEdit: (node: CategoryNode) => void;
+};
+
+function CategoryTreeNode({ node, onEdit }: CategoryTreeNodeProps) {
+  const [expanded, setExpanded] = useState(true);
+  const hasChildren = node.children.length > 0;
+  const indent = node.depth * 20;
+
+  return (
+    <div>
+      <div
+        className="list-item"
+        style={{
+          marginLeft: indent,
+          borderLeft: node.depth === 0
+            ? "3px solid var(--color-primary)"
+            : "3px solid var(--border-subtle)",
+        }}
+      >
+        <div className="inline-stack" style={{ justifyContent: "space-between" }}>
+          <div className="inline-stack" style={{ gap: "6px", minWidth: 0 }}>
+            {hasChildren ? (
+              <button
+                type="button"
+                onClick={() => setExpanded((e) => !e)}
+                style={{
+                  background: "none",
+                  border: "none",
+                  cursor: "pointer",
+                  color: "var(--text-muted)",
+                  fontSize: "0.75rem",
+                  padding: "0 2px",
+                  flexShrink: 0,
+                }}
+              >
+                {expanded ? "▾" : "▸"}
+              </button>
+            ) : (
+              <span style={{ width: "14px", flexShrink: 0, display: "inline-block" }} />
+            )}
+            <div style={{ minWidth: 0 }}>
+              <strong style={{ fontSize: node.depth === 0 ? "0.95rem" : "0.875rem" }}>
+                {node.name}
+              </strong>
+              {node.depth > 0 && (
+                <span className="muted" style={{ fontSize: "0.75rem", marginLeft: "6px" }}>
+                  Level {node.depth}
+                </span>
+              )}
+            </div>
+          </div>
+          <div className="inline-stack" style={{ gap: "6px", flexShrink: 0 }}>
+            <Badge tone="neutral" subtle>{node.code}</Badge>
+            <Button onClick={() => onEdit(node)} variant="secondary" size="sm">
+              Edit
+            </Button>
+          </div>
+        </div>
+      </div>
+
+      {hasChildren && expanded && (
+        <div>
+          {node.children.map((child) => (
+            <CategoryTreeNode key={child.id} node={child} onEdit={onEdit} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function ItemCategoriesPage() {
-  const { activeTenantData, notify } = useMockApp();
+  const { activeWorkspaceData, saveItemCategory } = useMockApp();
+  const [editingId, setEditingId] = useState<string | undefined>();
   const [name, setName] = useState("");
   const [code, setCode] = useState("");
   const [parentId, setParentId] = useState("");
 
-  if (!activeTenantData) {
+  if (!activeWorkspaceData) {
     return null;
   }
 
-  const parentCategories = activeTenantData.itemCategories.filter((c) => !c.parentCategoryId);
-  const getChildren = (parentId: string) => activeTenantData.itemCategories.filter((c) => c.parentCategoryId === parentId);
+  const tree = buildCategoryTree(activeWorkspaceData.itemCategories);
+  const flat = flattenCategoryTree(tree);
+
+  const excludedIds = editingId ? getDescendantIds(tree, editingId) : [];
+  const parentOptions = [
+    { value: "", label: "— Kategori Utama (tanpa induk) —" },
+    ...flat
+      .filter((n) => !excludedIds.includes(n.id))
+      .map((n) => ({
+        value: n.id,
+        label: "\u00A0".repeat(n.depth * 4) + (n.depth > 0 ? "↳ " : "") + n.name,
+      })),
+  ];
+
+  function handleEdit(node: CategoryNode) {
+    setEditingId(node.id);
+    setName(node.name);
+    setCode(node.code);
+    setParentId(node.parentCategoryId ?? "");
+  }
+
+  function handleReset() {
+    setEditingId(undefined);
+    setName("");
+    setCode("");
+    setParentId("");
+  }
+
+  function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    saveItemCategory({
+      id: editingId,
+      name,
+      code,
+      parentCategoryId: parentId || undefined,
+    });
+    handleReset();
+  }
 
   return (
     <div className="page-shell">
       <PageHeader
         breadcrumbs={<span>Dashboard &gt; Produk &gt; Kategori</span>}
-        description="Kelompokkan produk ke dalam kategori utama dan sub-kategori agar rapi dan mempermudah filter pencarian."
+        description="Kelompokkan produk ke dalam hierarki kategori tanpa batas kedalaman."
         title="Kategori Produk"
       />
 
       <div className="grid-2">
-        <SectionCard title="Daftar Kategori" description="Daftar hierarki kategori (maksimal 2 level visual).">
+        <SectionCard
+          title="Hierarki Kategori"
+          description="Klik ▸ untuk expand, klik Edit untuk mengubah entri."
+        >
           <div className="list-stack">
-            {parentCategories.map((parent) => (
-              <div key={parent.id} style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-                {/* Parent Kategori */}
-                <div className="list-item" style={{ borderLeft: "4px solid var(--color-primary)" }}>
-                  <div className="inline-stack" style={{ justifyContent: "space-between" }}>
-                    <strong>{parent.name}</strong>
-                    <Badge tone="neutral">{parent.code}</Badge>
-                  </div>
-                  <span className="muted">Kategori Utama</span>
-                </div>
-
-                {/* Sub Kategori */}
-                <div style={{ paddingLeft: "32px", display: "flex", flexDirection: "column", gap: "8px" }}>
-                  {getChildren(parent.id).map((child) => (
-                    <div className="list-item" key={child.id} style={{ padding: "12px", background: "var(--bg-canvas)" }}>
-                      <div className="inline-stack" style={{ justifyContent: "space-between" }}>
-                        <strong style={{ fontSize: "0.9rem" }}>↳ {child.name}</strong>
-                        <Badge tone="neutral" subtle>{child.code}</Badge>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            ))}
+            {tree.length > 0 ? (
+              tree.map((node) => (
+                <CategoryTreeNode key={node.id} node={node} onEdit={handleEdit} />
+              ))
+            ) : (
+              <EmptyState
+                title="Belum ada kategori"
+                description="Tambahkan kategori pertama menggunakan form di sebelah kanan."
+              />
+            )}
           </div>
         </SectionCard>
 
-        <SectionCard title="Tambah Kategori" description="Simpan kategori atau sub-kategori baru.">
-          <form
-            className="field-stack"
-            onSubmit={(event) => {
-              event.preventDefault();
-              notify(
-                "Kategori tersimpan",
-                `Kategori ${name} berhasil ditambahkan ke hierarki kelas kategori Anda.`,
-                "success",
-              );
-              setName("");
-              setCode("");
-              setParentId("");
-            }}
-          >
+        <SectionCard
+          title={editingId ? "Edit Kategori" : "Tambah Kategori"}
+          description={
+            editingId
+              ? "Perbarui nama, kode, atau posisi induk kategori ini."
+              : "Tambah kategori baru pada level mana pun dalam hierarki."
+          }
+        >
+          <form className="field-stack" onSubmit={handleSubmit}>
             <div className="field">
-              <label htmlFor="category-parent">Kategori Induk (Opsional)</label>
+              <label htmlFor="category-parent">Kategori Induk</label>
               <SearchableSelect
                 id="category-parent"
                 onChange={(val) => setParentId(val)}
                 value={parentId}
-                options={[
-                  { value: "", label: "-- Kategori Utama (Tidak Ada Induk) --" },
-                  ...parentCategories.map((p: any) => ({ value: p.id, label: p.name })),
-                ]}
+                options={parentOptions}
               />
-              <span className="helper-text">Pilih induk jika ini adalah sub-kategori. Kosongkan untuk kategori utama.</span>
+              <span className="helper-text">
+                Kosongkan untuk menjadikan kategori utama (level 0).
+              </span>
             </div>
-            <div className="field" style={{ marginTop: "12px" }}>
+            <div className="field">
               <label htmlFor="category-name">Nama kategori</label>
-              <input className="input" id="category-name" onChange={(event) => setName(event.target.value)} required value={name} />
+              <input
+                className="input"
+                id="category-name"
+                onChange={(e) => setName(e.target.value)}
+                required
+                value={name}
+              />
             </div>
             <div className="field">
               <label htmlFor="category-code">Kode kategori</label>
-              <input className="input" id="category-code" onChange={(event) => setCode(event.target.value)} required value={code} />
+              <input
+                className="input"
+                id="category-code"
+                onChange={(e) => setCode(e.target.value)}
+                required
+                value={code}
+              />
             </div>
             <div className="form-actions">
-              <Link className="button button-secondary" to="/items">
-                Kembali ke Produk
-              </Link>
-              <Button type="submit">Tambah Kategori</Button>
+              {editingId ? (
+                <Button onClick={handleReset} type="button" variant="secondary">
+                  Batal Edit
+                </Button>
+              ) : (
+                <Link className="button button-secondary" to="/items">
+                  Kembali ke Produk
+                </Link>
+              )}
+              <Button type="submit">{editingId ? "Simpan Perubahan" : "Tambah Kategori"}</Button>
             </div>
           </form>
         </SectionCard>

@@ -1,4 +1,3 @@
-import { useMemo } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
   Badge,
@@ -14,20 +13,25 @@ import {
 import { useMockApp } from "../../../mock/state";
 import { formatDateTime } from "../../../utils";
 
+function getFormTextValue(formData: FormData, fieldName: string) {
+  const value = formData.get(fieldName);
+  return typeof value === "string" ? value : "";
+}
+
 export function StockListPage() {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
-  const { activeTenantData, can } = useMockApp();
+  const { activeWorkspaceData, can } = useMockApp();
 
-  if (!activeTenantData) {
+  if (!activeWorkspaceData) {
     return null;
   }
 
   const search = searchParams.get("search")?.toLowerCase() ?? "";
   const criticalOnly = searchParams.get("critical_only") === "true";
 
-  const rows = activeTenantData.stockBalances.filter((balance) => {
-    const item = activeTenantData.items.find((entry) => entry.id === balance.itemId);
+  const rows = activeWorkspaceData.stockBalances.filter((balance) => {
+    const item = activeWorkspaceData.items.find((entry) => entry.id === balance.itemId);
     if (!item) {
       return false;
     }
@@ -105,7 +109,7 @@ export function StockListPage() {
               {
                 header: "Item",
                 render: (balance) => {
-                  const item = activeTenantData.items.find((entry) => entry.id === balance.itemId);
+                  const item = activeWorkspaceData.items.find((entry) => entry.id === balance.itemId);
                   return (
                     <div className="field-stack">
                       <strong>{item?.itemName}</strong>
@@ -125,7 +129,7 @@ export function StockListPage() {
               {
                 header: "Tersedia",
                 render: (balance) => {
-                  const item = activeTenantData.items.find((entry) => entry.id === balance.itemId);
+                  const item = activeWorkspaceData.items.find((entry) => entry.id === balance.itemId);
                   const isCritical = balance.availableQty <= (item?.minStockQty ?? 0);
                   return (
                     <div className="inline-stack">
@@ -167,22 +171,22 @@ export function StockListPage() {
 export function StockDetailPage() {
   const navigate = useNavigate();
   const { itemId } = useParams();
-  const { activeTenantData, can } = useMockApp();
+  const { activeWorkspaceData, can } = useMockApp();
 
-  if (!activeTenantData) {
+  if (!activeWorkspaceData) {
     return null;
   }
 
-  const item = activeTenantData.items.find((entry) => entry.id === itemId);
-  const balance = activeTenantData.stockBalances.find((entry) => entry.itemId === itemId);
-  const movements = activeTenantData.stockMovements
+  const item = activeWorkspaceData.items.find((entry) => entry.id === itemId);
+  const balance = activeWorkspaceData.stockBalances.find((entry) => entry.itemId === itemId);
+  const movements = activeWorkspaceData.stockMovements
     .filter((movement) => movement.itemId === itemId)
     .sort((left, right) => right.movedAt.localeCompare(left.movedAt));
 
   if (!item) {
     return (
       <Notice tone="danger" title="Item stok tidak ditemukan">
-        Detail item yang Anda cari tidak tersedia di tenant aktif.
+        Detail item yang Anda cari tidak tersedia pada cabang aktif.
       </Notice>
     );
   }
@@ -262,9 +266,9 @@ export function StockAdjustmentPage() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const preselectedItemId = searchParams.get("item_id") ?? "";
-  const { activeTenantData, saveStockAdjustment } = useMockApp();
+  const { activeWorkspaceData, saveStockAdjustment } = useMockApp();
 
-  if (!activeTenantData) {
+  if (!activeWorkspaceData) {
     return null;
   }
 
@@ -286,12 +290,12 @@ export function StockAdjustmentPage() {
         onSubmit={(event) => {
           event.preventDefault();
           const formData = new FormData(event.currentTarget);
-          const itemId = String(formData.get("itemId"));
+          const itemId = getFormTextValue(formData, "itemId");
           saveStockAdjustment({
             itemId,
             movementType: formData.get("movementType") as "in" | "out" | "adjustment",
             quantity: Number(formData.get("quantity")),
-            reasonText: String(formData.get("reasonText")),
+            reasonText: getFormTextValue(formData, "reasonText"),
           });
           navigate(`/stock/${itemId}`);
         }}
@@ -303,8 +307,8 @@ export function StockAdjustmentPage() {
               <SearchableSelect
                 id="itemId"
                 name="itemId"
-                defaultValue={preselectedItemId || activeTenantData.items[0]?.id}
-                options={activeTenantData.items.filter((item) => item.stockTracked).map((item) => ({ value: item.id, label: item.itemName }))}
+                defaultValue={preselectedItemId || activeWorkspaceData.items[0]?.id}
+                options={activeWorkspaceData.items.filter((item) => item.stockTracked).map((item) => ({ value: item.id, label: item.itemName }))}
               />
             </div>
             <div className="field">
@@ -344,14 +348,14 @@ export function StockAdjustmentPage() {
 
 export function StockMovementsPage() {
   const [searchParams, setSearchParams] = useSearchParams();
-  const { activeTenantData } = useMockApp();
+  const { activeWorkspaceData } = useMockApp();
 
-  if (!activeTenantData) {
+  if (!activeWorkspaceData) {
     return null;
   }
 
   const movementType = searchParams.get("movement_type") ?? "";
-  const movements = activeTenantData.stockMovements.filter(
+  const movements = activeWorkspaceData.stockMovements.filter(
     (movement) => movementType.length === 0 || movement.movementType === movementType,
   );
 
@@ -394,7 +398,7 @@ export function StockMovementsPage() {
             {
               header: "Item",
               render: (movement) =>
-                activeTenantData.items.find((item) => item.id === movement.itemId)?.itemName ?? "-",
+                activeWorkspaceData.items.find((item) => item.id === movement.itemId)?.itemName ?? "-",
             },
             {
               header: "Waktu",

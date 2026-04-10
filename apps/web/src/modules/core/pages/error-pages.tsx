@@ -29,7 +29,7 @@ const MODULES_LIST = [
   { key: "stock", label: "Inventori Gudang", actions: ["view", "create", "update"] },
   { key: "reporting", label: "Laporan Bisnis", actions: ["view"] },
   { key: "user", label: "Pengguna & Tim", actions: ["view", "create", "update", "archive"] },
-  { key: "tenant_config", label: "Pengaturan", actions: ["view", "manage"] },
+  { key: "company_config", label: "Pengaturan", actions: ["view", "manage"] },
   { key: "knowledge", label: "Basis Pengetahuan (AI)", actions: ["view", "create", "update", "archive"] },
   { key: "whatsapp", label: "Asisten WA Gateway", actions: ["view", "manage"] },
   { key: "audit_log", label: "Audit Log", actions: ["view"] },

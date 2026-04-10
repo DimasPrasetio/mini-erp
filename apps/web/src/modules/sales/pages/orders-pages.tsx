@@ -35,9 +35,9 @@ function toInputDate(value?: string) {
 export function OrdersListPage() {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
-  const { activeTenantData, can } = useMockApp();
+  const { activeWorkspaceData, can } = useMockApp();
 
-  if (!activeTenantData) {
+  if (!activeWorkspaceData) {
     return null;
   }
 
@@ -45,8 +45,8 @@ export function OrdersListPage() {
   const statusGroup = searchParams.get("status_group") ?? "";
   const orderKind = searchParams.get("order_kind") ?? "";
 
-  const orders = activeTenantData.orders.filter((order) => {
-    const status = activeTenantData.statusDefinitions.find((entry) => entry.id === order.currentStatusId);
+  const orders = activeWorkspaceData.orders.filter((order) => {
+    const status = activeWorkspaceData.statusDefinitions.find((entry) => entry.id === order.currentStatusId);
     const matchesSearch =
       search.length === 0 || order.orderNumber.toLowerCase().includes(search);
     const matchesStatus = statusGroup.length === 0 || status?.statusGroup === statusGroup;
@@ -146,12 +146,12 @@ export function OrdersListPage() {
               {
                 header: "Pihak Terkait",
                 render: (order) =>
-                  activeTenantData.businessParties.find((party) => party.id === order.relatedPartyId)?.name ?? "-",
+                  activeWorkspaceData.businessParties.find((party) => party.id === order.relatedPartyId)?.name ?? "-",
               },
               {
                 header: "Status",
                 render: (order) => {
-                  const status = activeTenantData.statusDefinitions.find(
+                  const status = activeWorkspaceData.statusDefinitions.find(
                     (entry) => entry.id === order.currentStatusId,
                   );
                   return <Badge tone={statusTone(status?.statusGroup ?? "pending")}>{status?.label}</Badge>;
@@ -195,25 +195,25 @@ export function OrdersListPage() {
 export function OrderDetailPage() {
   const navigate = useNavigate();
   const { orderId } = useParams();
-  const { activeTenantData, findMembershipName, updateOrderStatus, can } = useMockApp();
+  const { activeWorkspaceData, findMembershipName, updateOrderStatus, can } = useMockApp();
   const [selectedTransition, setSelectedTransition] = useState<{ id: string; label: string }>();
 
-  if (!activeTenantData) {
+  if (!activeWorkspaceData) {
     return null;
   }
 
-  const order = activeTenantData.orders.find((entry) => entry.id === orderId);
+  const order = activeWorkspaceData.orders.find((entry) => entry.id === orderId);
   if (!order) {
     return (
       <Notice tone="danger" title="Order tidak ditemukan">
-        Order yang Anda cari tidak tersedia pada tenant aktif.
+        Order yang Anda cari tidak tersedia pada cabang aktif.
       </Notice>
     );
   }
 
-  const status = activeTenantData.statusDefinitions.find((entry) => entry.id === order.currentStatusId);
-  const party = activeTenantData.businessParties.find((entry) => entry.id === order.relatedPartyId);
-  const transitions = activeTenantData.statusTransitions.filter(
+  const status = activeWorkspaceData.statusDefinitions.find((entry) => entry.id === order.currentStatusId);
+  const party = activeWorkspaceData.businessParties.find((entry) => entry.id === order.relatedPartyId);
+  const transitions = activeWorkspaceData.statusTransitions.filter(
     (entry) => entry.fromStatusId === order.currentStatusId && entry.active,
   );
 
@@ -317,7 +317,7 @@ export function OrderDetailPage() {
             {
               header: "Produk",
               render: (line) => {
-                const item = activeTenantData.items.find((entry) => entry.id === line.itemId);
+                const item = activeWorkspaceData.items.find((entry) => entry.id === line.itemId);
                 return (
                   <div className="field-stack">
                     <strong>{item?.itemName ?? line.itemId}</strong>
@@ -348,8 +348,8 @@ export function OrderDetailPage() {
       <SectionCard title="Riwayat Status" description="Tinjauan pembaruan status pesanan.">
         <div className="timeline">
           {order.history.map((entry) => {
-            const toStatus = activeTenantData.statusDefinitions.find((statusEntry) => statusEntry.id === entry.toStatusId);
-            const fromStatus = activeTenantData.statusDefinitions.find((statusEntry) => statusEntry.id === entry.fromStatusId);
+            const toStatus = activeWorkspaceData.statusDefinitions.find((statusEntry) => statusEntry.id === entry.toStatusId);
+            const fromStatus = activeWorkspaceData.statusDefinitions.find((statusEntry) => statusEntry.id === entry.fromStatusId);
             return (
               <div className="timeline-item" key={entry.id}>
                 <div className="timeline-dot" />
@@ -389,8 +389,8 @@ export function OrderDetailPage() {
 export function OrderFormPage() {
   const navigate = useNavigate();
   const { orderId } = useParams();
-  const { activeTenantData, saveOrder, activeUser } = useMockApp();
-  const existing = activeTenantData?.orders.find((entry) => entry.id === orderId);
+  const { activeWorkspaceData, saveOrder, activeUser } = useMockApp();
+  const existing = activeWorkspaceData?.orders.find((entry) => entry.id === orderId);
   const [lines, setLines] = useState<DraftLine[]>(
     existing?.items.map((line) => ({
       ...line,
@@ -398,15 +398,15 @@ export function OrderFormPage() {
     })) ?? [
       {
         id: crypto.randomUUID(),
-        itemId: activeTenantData?.items[0]?.id ?? "",
+        itemId: activeWorkspaceData?.items[0]?.id ?? "",
         quantity: 1,
-        unitPrice: activeTenantData?.items[0]?.standardPrice ?? 0,
+        unitPrice: activeWorkspaceData?.items[0]?.standardPrice ?? 0,
         notes: "",
       },
     ],
   );
 
-  if (!activeTenantData) {
+  if (!activeWorkspaceData) {
     return null;
   }
 
@@ -441,8 +441,8 @@ export function OrderFormPage() {
             relatedPartyId: (formData.get("relatedPartyId") as string) || undefined,
             currentStatusId:
               existing?.currentStatusId ??
-              activeTenantData.statusDefinitions.find((status) => status.isInitial)?.id ??
-              activeTenantData.statusDefinitions[0].id,
+              activeWorkspaceData.statusDefinitions.find((status) => status.isInitial)?.id ??
+              activeWorkspaceData.statusDefinitions[0].id,
             assignedMembershipId: (formData.get("assignedMembershipId") as string) || undefined,
             orderDate: new Date(String(formData.get("orderDate"))).toISOString(),
             dueDate: formData.get("dueDate")
@@ -451,8 +451,8 @@ export function OrderFormPage() {
             notes: String(formData.get("notes") ?? ""),
             createdByMembershipId:
               existing?.createdByMembershipId ??
-              activeTenantData.memberships.find((membership) => membership.userId === activeUser?.id)?.id ??
-              activeTenantData.memberships[0].id,
+              activeWorkspaceData.memberships.find((membership) => membership.userId === activeUser?.id)?.id ??
+              activeWorkspaceData.memberships[0].id,
             items: lines.map((line) => ({
               id: line.id,
               itemId: line.itemId,
@@ -488,7 +488,7 @@ export function OrderFormPage() {
                 defaultValue={existing?.relatedPartyId ?? ""}
                 options={[
                   { value: "", label: "Pilih pihak terkait" },
-                  ...activeTenantData.businessParties.map((party) => ({ value: party.id, label: party.name })),
+                  ...activeWorkspaceData.businessParties.map((party) => ({ value: party.id, label: party.name })),
                 ]}
               />
             </div>
@@ -497,10 +497,10 @@ export function OrderFormPage() {
               <SearchableSelect
                 id="assignedMembershipId"
                 name="assignedMembershipId"
-                defaultValue={existing?.assignedMembershipId ?? activeTenantData.memberships[0]?.id ?? ""}
+                defaultValue={existing?.assignedMembershipId ?? activeWorkspaceData.memberships[0]?.id ?? ""}
                 options={[
                   { value: "", label: "Belum ditentukan" },
-                  ...activeTenantData.memberships.map((membership) => ({ value: membership.id, label: membership.displayTitle })),
+                  ...activeWorkspaceData.memberships.map((membership) => ({ value: membership.id, label: membership.displayTitle })),
                 ]}
               />
             </div>
@@ -527,9 +527,9 @@ export function OrderFormPage() {
                   ...current,
                   {
                     id: crypto.randomUUID(),
-                    itemId: activeTenantData.items[0]?.id ?? "",
+                    itemId: activeWorkspaceData.items[0]?.id ?? "",
                     quantity: 1,
-                    unitPrice: activeTenantData.items[0]?.standardPrice ?? 0,
+                    unitPrice: activeWorkspaceData.items[0]?.standardPrice ?? 0,
                     notes: "",
                   },
                 ])
@@ -550,7 +550,7 @@ export function OrderFormPage() {
                     <label>Produk</label>
                     <SearchableSelect
                       onChange={(val) => {
-                        const item = activeTenantData.items.find((entry) => entry.id === val);
+                        const item = activeWorkspaceData.items.find((entry) => entry.id === val);
                         setLines((current) =>
                           current.map((entry) =>
                             entry.id === line.id
@@ -564,7 +564,7 @@ export function OrderFormPage() {
                         );
                       }}
                       value={line.itemId}
-                      options={activeTenantData.items.map((item) => ({ value: item.id, label: item.itemName }))}
+                      options={activeWorkspaceData.items.map((item) => ({ value: item.id, label: item.itemName }))}
                     />
                   </div>
                   <div className="field">
